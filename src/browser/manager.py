@@ -1,7 +1,7 @@
 from playwright.sync_api import sync_playwright
 from patchright.sync_api import sync_playwright as patchright_playwright
 
-from core.config import config
+from src.core.config import config
 
 
 class BrowserManager:
@@ -18,9 +18,7 @@ class BrowserManager:
         self.context = None
         self.page = None
 
-
     def launch(self):
-
         if self.headless:
             print("[Browser] Starting Patchright headless")
 
@@ -51,14 +49,10 @@ class BrowserManager:
 
             self.page = self.context.new_page()
 
-
         print("[Browser] Ready")
-
         return self.page
 
-
     def close(self):
-
         if self.context:
             self.context.close()
 
