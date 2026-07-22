@@ -1,0 +1,21 @@
+{
+    "browser": {
+        "headless": false,
+        "thorium_path": "/usr/bin/thorium-browser",
+        "profile_path": "/home/zizouurl/.autonect/browser-profile"
+    },
+
+    "ai": {
+        "provider": "deepseek",
+        "timeout_seconds": 60
+    },
+
+    "safety": {
+        "auto_approve": false,
+        "blocker_enabled": true
+    },
+
+    "logging": {
+        "level": "INFO"
+    }
+}
