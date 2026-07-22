@@ -4,3 +4,5 @@ __pycache__/
 .env
 logs/
 .vscode/
+monitor_database.py
+SOCKETLINK_DATABASE.md
