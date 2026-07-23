@@ -8,7 +8,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from src.ai.providers.deepseek import DeepSeekProvider
 
-# Singleton provider — shared across requests
 provider: DeepSeekProvider | None = None
 
 BASE_DIR = Path(__file__).parent
@@ -21,19 +20,14 @@ INDEX_HTML = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 async def lifespan(app: FastAPI):
     global provider
     loop = asyncio.get_running_loop()
-
     provider = DeepSeekProvider()
     await loop.run_in_executor(None, provider.connect)
-
     yield
-
     if provider:
         await loop.run_in_executor(None, provider.close)
 
 
 app = FastAPI(title="AutoNect Chat", lifespan=lifespan)
-
-# Serve static files (CSS, JS)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -46,165 +40,161 @@ class ChatResponse(BaseModel):
     answer: str
 
 
-# Known language identifiers that DeepSeek may use as bare code fences
-KNOWN_LANGUAGES = (
+KNOWN_LANGUAGES = {
     "python", "javascript", "js", "bash", "sh", "html", "css",
     "json", "yaml", "yml", "sql", "text", "markdown", "md",
     "rust", "go", "java", "c", "cpp", "csharp", "typescript", "ts",
     "ruby", "php", "swift", "kotlin", "r", "scala", "perl",
-)
+}
+
+_SMART_QUOTE_MAP = {
+    "\u201c": '"', "\u201d": '"',
+    "\u2018": "'", "\u2019": "'",
+    "\u2013": "-", "\u2014": "--",
+    "\u2011": "-", "\u2026": "...",
+    "\u00a0": " ",
+}
+
+_INLINE_PATTERNS = [
+    (r"(?<!`)\b(@\w+(?:\.\w+)*)\b(?!`)", r"`\1`"),
+    (r"(?<!`)\b(__\w+__)\b(?!`)", r"`\1`"),
+    (r"(?<!`)(\*{1,2}\w+)(?!`)", r"`\1`"),
+    (r"(?<!`)\b(\w+\s*\*\s*\w+)\b(?!`)", r"`\1`"),
+    (r"(?<!`)(?<!\*)\b(\w+\*\w+)\b(?!\*)(?!`)", r"`\1`"),
+]
+
+_FENCE_RE = re.compile(r"^```(\w*)$")
+
+# Regex patterns for citation stripping and URL/email wrapping
+_CITATION_RE = re.compile(r"\s*-\s*\d+\s*")
+_URL_RE = re.compile(r"(?<!`)(https?://[^\s\)\]>]+?)(?=[\s\)\]>]|$)(?!`)")
+_EMAIL_RE = re.compile(r"(?<!`)([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?!`)")
 
 
-def fix_broken_fences(text: str) -> str:
-    """
-    DeepSeek sometimes prematurely closes a fenced code block
-    and continues the code outside. Merge those back together.
-    """
+def _replace_smart_quotes(text: str) -> str:
+    for k, v in _SMART_QUOTE_MAP.items():
+        text = text.replace(k, v)
+    return text
+
+
+def _is_blank(line: str) -> bool:
+    return line.strip() == ""
+
+
+def _strip_citations(text: str) -> str:
+    """Remove DeepSeek inline citation numbers (e.g., ' -1', '-79')."""
+    # Replace " -1" or "-\n1" with a single space, careful not to merge words
+    text = re.sub(r"\s*-\s*\d{1,3}\s*", " ", text)
+    # Remove trailing "-\n" that might remain
+    text = re.sub(r"\s*-\s*\n\s*", " ", text)
+    return text
+
+
+def _wrap_urls_and_emails(prose: str) -> str:
+    """Wrap bare URLs and email addresses in backticks."""
+    prose = _URL_RE.sub(r"`\1`", prose)
+    prose = _EMAIL_RE.sub(r"`\1`", prose)
+    return prose
+
+
+def fix_all_fences(text: str) -> str:
     lines = text.split("\n")
     result = []
     i = 0
-    while i < len(lines):
-        line = lines[i]
-        result.append(line)
+    n = len(lines)
 
-        stripped = line.strip()
-        if stripped.startswith("```"):
+    while i < n:
+        line = lines[i]
+        s = line.strip()
+
+        # (A) Bare language tag
+        if s in KNOWN_LANGUAGES and (i == 0 or _is_blank(lines[i - 1])):
+            result.append(f"```{s}")
             i += 1
-            while i < len(lines):
-                if lines[i].strip() == "```":
-                    peek = i + 1
-                    while peek < len(lines) and lines[peek].strip() == "":
-                        peek += 1
-                    if peek < len(lines) and (
-                        lines[peek].startswith("    ") or lines[peek].startswith("\t")
+            while i < n:
+                li = lines[i]
+                st = li.strip()
+
+                if st == "```":
+                    ahead = i + 1
+                    while ahead < n and _is_blank(lines[ahead]):
+                        ahead += 1
+                    if ahead < n and (
+                        lines[ahead].startswith("    ") or
+                        lines[ahead].startswith("\t")
                     ):
-                        result.pop()  # remove premature closing fence
                         i += 1
-                        while i < len(lines):
-                            line = lines[i]
-                            stripped = line.strip()
-                            if stripped == "":
-                                ahead = i + 1
-                                while ahead < len(lines) and lines[ahead].strip() == "":
-                                    ahead += 1
-                                if ahead >= len(lines) or not (
-                                    lines[ahead].startswith("    ") or lines[ahead].startswith("\t")
-                                ):
-                                    result.append("```")
-                                    break
-                                else:
-                                    result.append(line)
-                            elif stripped.startswith("```"):
-                                result.append("```")
-                                i -= 1
-                                break
-                            else:
-                                result.append(line)
-                            i += 1
-                        else:
-                            result.append("```")
-                        break
+                        continue
                     else:
+                        result.append("```")
                         i += 1
                         break
-                else:
-                    result.append(lines[i])
-                    i += 1
+
+                result.append(li)
+                i += 1
+            else:
+                result.append("```")
+            continue
+
+        # (B) Existing fence
+        if _FENCE_RE.match(s):
+            result.append(line)
+            i += 1
+            while i < n:
+                li = lines[i]
+                st = li.strip()
+
+                if _FENCE_RE.match(st):
+                    ahead = i + 1
+                    while ahead < n and _is_blank(lines[ahead]):
+                        ahead += 1
+                    if ahead < n and (
+                        lines[ahead].startswith("    ") or
+                        lines[ahead].startswith("\t")
+                    ):
+                        i += 1
+                        continue
+                    else:
+                        result.append(li)
+                        i += 1
+                        break
+
+                result.append(li)
+                i += 1
+            else:
+                result.append("```")
+            continue
+
+        # (C) Normal line
+        result.append(line)
         i += 1
 
     return "\n".join(result)
 
 
 def fix_inline_code_patterns(text: str) -> str:
-    """
-    Protect Python‑style patterns that Markdown parsers misinterpret
-    when they appear outside code blocks.
-
-    - `@decorator`  → wrapped in backticks
-    - `__dunder__`  → wrapped in backticks
-    - `*args`, `**kwargs` → wrapped in backticks
-    """
-    # Split text into fenced blocks and non‑fenced prose.
-    # We only modify the prose parts.
     parts = re.split(r"(```[\s\S]*?```)", text)
     for idx, part in enumerate(parts):
         if part.startswith("```"):
-            continue  # leave code blocks untouched
-
-        # @decorator patterns (e.g., @lru_cache, @staticmethod)
-        # Only match when preceded by word boundary, not already in backticks.
-        part = re.sub(
-            r"(?<!`)\b(@\w+(?:\.\w+)*)\b(?!`)",
-            r"`\1`",
-            part,
-        )
-
-        # __dunder__ patterns (e.g., __name__, __main__, __init__)
-        part = re.sub(
-            r"(?<!`)\b(__\w+__)\b(?!`)",
-            r"`\1`",
-            part,
-        )
-
-        # *args and **kwargs
-        part = re.sub(
-            r"(?<!`)(\*{1,2}\w+)(?!`)",
-            r"`\1`",
-            part,
-        )
-
+            continue
+        # Strip citations and wrap URLs/emails only in prose
+        part = _strip_citations(part)
+        part = _wrap_urls_and_emails(part)
+        for pattern, replacement in _INLINE_PATTERNS:
+            part = re.sub(pattern, replacement, part)
         parts[idx] = part
-
     return "".join(parts)
 
 
 def clean_deepseek_markdown(text: str) -> str:
-    """
-    Clean DeepSeek's non‑standard markdown so standard parsers can render it.
-    """
-
-    # 1. Replace literal "\n" strings with actual newlines
+    text = _replace_smart_quotes(text)
     text = text.replace("\\n", "\n")
-
-    # 2. Remove "Copy" and "Download" tokens that DeepSeek injects
+    text = text.replace('\\"', '"')
     text = re.sub(r"```(\w*)\nCopy\nDownload\n", r"```\1\n", text)
     text = re.sub(r"\nCopy\nDownload\n", "\n", text)
-
-    # 3. Fix HTML entities that sometimes appear
     text = text.replace("&lt;", "<").replace("&gt;", ">")
-
-    # 4. Auto‑wrap indented code blocks missing opening fences
-    def wrap_indented_code(match):
-        lang = match.group(1)
-        code = match.group(2).rstrip("\n")
-        return f"```{lang}\n{code}\n```"
-
-    text = re.sub(
-        r"(?:(?<=\n\n)|(?<=^))(" + "|".join(KNOWN_LANGUAGES) + r")\n((?:(?: {4}|\t).*\n?)+)",
-        wrap_indented_code,
-        text,
-        flags=re.MULTILINE,
-    )
-
-    # 5. Fallback: wrap non‑indented code blocks after a bare language tag
-    def wrap_non_indented_code(match):
-        lang = match.group(1)
-        code = match.group(2).rstrip("\n")
-        return f"```{lang}\n{code}\n```"
-
-    text = re.sub(
-        r"(?:(?<=\n\n)|(?<=^))(" + "|".join(KNOWN_LANGUAGES) + r")\n((?:[^\n]+\n)+?)(?=\n|$)",
-        wrap_non_indented_code,
-        text,
-        flags=re.MULTILINE,
-    )
-
-    # 6. Merge prematurely‑closed fenced blocks
-    text = fix_broken_fences(text)
-
-    # 7. Protect inline code patterns from markdown misinterpretation
+    text = fix_all_fences(text)
     text = fix_inline_code_patterns(text)
-
     return text
 
 
@@ -216,9 +206,7 @@ async def index():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     if not provider:
-        return JSONResponse(
-            status_code=500, content={"error": "Provider not initialized"}
-        )
+        return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
 
     loop = asyncio.get_running_loop()
 
