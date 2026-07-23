@@ -100,59 +100,94 @@ SAMPLES = [
         ),
     },
     {
-        "name": "citations and missing backticks",
+        "name": "citations, lists, domains",
         "raw": (
-            "Based on my research, the website kt200ii.net is not an official source for "
-            "the KT200II ECU programmer. It appears to be a third-party reseller or an "
-            "unofficial site, not the manufacturer's official store.\n\n"
-            "Here's a breakdown of my findings:\n\n"
-            "\U0001f4c4 What the Page Is\n\n"
-            "The page you linked is a product sales page for the KT200II ECU/TCU Programmer-"
-            "1\n. It describes the tool and lists three versions with their prices-"
-            "1\n:\n\n"
-            "*   **Basic Version**: $700 USD\n\n"
-            "*   **Full Version**: $855 USD\n\n"
-            "*   **Ultimate Version**: $1330 USD\n\n"
-            "The page claims to be an \"Official ECUHELP Product\" site-"
-            "1\n-"
-            "79\n.\n\n"
-            "\u274c Why It's Likely Not Official\n\n"
-            "Several signs indicate this is not the official site:\n\n"
-            "Official Brand & Store: The KT200II is manufactured by a brand called ECUHELP-"
-            "-"
-            ". Their official shop is https://www.ecuhelpshop.com/-"
-            ", and they also use www.ecuhelp.org for official announcements-"
-            "-"
-            ". The site you found (kt200ii.net) is not one of these official domains.\n\n"
-            "Unofficial Contact Details: The contact information on kt200ii.net uses a Gmail "
-            "email address (yunduo191613`@gmail.com`)-"
-            "79\n. An official business would typically use a professional email address "
-            "associated with its own domain.\n\n"
-            "Placeholder Pages: The \"/about\" and \"/contact\" pages on the site show placeholder "
-            "content like \"AI & Developer Tools\"-"
-            "89\n-"
-            "90\n, which is a strong indicator of a low-quality or quickly assembled site, "
-            "not a professional, official storefront.\n\n"
-            "No Official Endorsement: A search for kt200ii.net on the official ECUHELP shop "
-            "(ecuhelpshop.com) and support site (kt200.org) yields no results-"
-            ". The official brand does not appear to acknowledge or link to this site.\n\n"
-            "\U0001f48e Conclusion\n\n"
-            "While the page describes a real product (the KT200II programmer), the website "
-            "itself is not the official manufacturer's site. It is most likely run by an "
-            "unauthorized third-party reseller. If you are considering a purchase, it would "
-            "be safer to buy directly from the official ECUHELP shop at "
-            "https://www.ecuhelpshop.com/ to ensure you're getting a genuine product and "
-            "proper support."
+            "Based on my research, the website kt200ii.net is not the official website for "
+            "the KT200II programmer. It appears to be an independent reseller or a third-party "
+            "storefront.\n\n"
+            "Here is a breakdown of my findings:\n\n"
+            "\U0001f9d0 What is on kt200ii.net?\n\n"
+            "The page you linked is a product sales page for the KT200II ECU/TCU Programmer , "
+            "an automotive diagnostic tool used for reading and writing data on engine and "
+            "transmission control units .\n\n"
+            "It offers three versions of the tool :\n\n"
+            "Basic Version: $700 USD Full Version: $855 USD Ultimate Version: $1330 USD "
+            "\U0001f6a9 Why It's Likely Not Official\n\n"
+            "The Official Brand is \"ECUHELP\": The KT200II is a product of a brand called "
+            "ECUHELP . The official domain names associated with ECUHELP are primarily "
+            "ecuhelp.org and kt200.org  .\n\n"
+            "kt200ii.net is a Reseller: The site itself lists contact information for "
+            "\"ECUHELP\" , but it is operating under a different domain, which is a common "
+            "practice for authorized dealers. However, there is no clear indication on the site "
+            "that it is the manufacturer's official store.\n\n"
+            "Official Support Channels: Official support and updates for the KT200II are "
+            "typically found on kt200.org and ecuhelp.org . The kt200ii.net site is not "
+            "mentioned in official support circles.\n\n"
+            "\U0001f4a1 Recommendations\n\n"
+            "For Official Information: Visit the official websites at www.ecuhelp.org or "
+            "www.kt200.org for product specs, official software updates, and support  .\n\n"
+            "If Considering a Purchase: While kt200ii.net might be a legitimate reseller, it's "
+            "always safer to buy directly from the official manufacturer or an authorized "
+            "distributor to ensure you receive a genuine product, valid warranty, and proper "
+            "after-sales support."
+        ),
+    },
+    {
+        "name": "real response with bold lists and already-backticked URLs",
+        "raw": (
+            "Based on my research, the website `kt200ii.net` appears to be a third-party "
+            "reseller or affiliate site, not the official manufacturer's website for the KT200II "
+            "programmer.\n\n"
+            "\U0001f50d What is on the Page?\n\n"
+            "The page you linked is a product sales page for the KT200II ECU/TCU Programmer, "
+            "an automotive diagnostic tool used for reading and writing data on Engine Control "
+            "Units (ECUs) and Transmission Control Units (TCUs).\n\n"
+            "The page lists three versions of the device:\n\n"
+            "KT200II Basic ($700 USD): Supports car & truck protocols, suitable for everyday "
+            "workshop jobs.\n\n"
+            "KT200II Full ($855 USD): Adds support for motorcycles, ATVs, marine, and "
+            "agricultural machinery. Includes an offline dongle.\n\n"
+            "KT200II Ultimate ($1,330 USD): Includes everything in the Basic and Full "
+            "versions, plus the complete KT200PLUS kit and one-click DTC OFF & IMMO OFF "
+            "features.\n\n"
+            'The site itself claims to be an "Official ECUHELP Product".\n\n'
+            "\U0001f3e2 Is it Official?\n\n"
+            "Based on available information, it is highly unlikely that `kt200ii.net` is the "
+            "official website.\n\n"
+            "Here's what my research indicates:\n\n"
+            'The Official Brand is "ECUHELP": The KT200II is a product of the brand '
+            "ECUHELP. The manufacturer is identified as Shenzhen Kasheng Electronic "
+            "Technology Co., LTD.\n\n"
+            "Official Website and Support: Multiple sources, including official-looking tech "
+            "support pages, point to `https://`www.ecuhelpshop.com`/` as the official shop and "
+            "support portal. Another official-looking domain is www.ecuhelp.org.\n\n"
+            "Domain is Not Officially Linked: The domain `kt200ii.net` does not appear in "
+            "any search results as an official ECUHELP or manufacturer domain. The official "
+            "support and technical resources are consistently found on `ecuhelpshop.com`, "
+            "`kt200.org`, and ecuhelp.org.\n\n"
+            "\u26a0\ufe0f What This Means for You\n\n"
+            "Not the Manufacturer: You would be buying from a reseller, not the official "
+            "source.\n\n"
+            "Warranty & Support: Any warranty or technical support would be handled by this "
+            "reseller, not the manufacturer.\n\n"
+            "Prices: The prices listed may differ from other sellers.\n\n"
+            "\U0001f4dd Recommendations\n\n"
+            "Verify with the Manufacturer: For absolute certainty, you can contact the "
+            "official support directly via the contact information on "
+            "`https://`www.ecuhelpshop.com`/` to confirm if `kt200ii.net` is an authorized "
+            "reseller.\n\n"
+            "Proceed with Caution: If you choose to purchase from this site, treat it as you "
+            "would any other third-party online retailer. It's advisable to research the "
+            "site's reputation and understand their return and support policies before making "
+            "a purchase."
         ),
     },
 ]
 
-# A fence delimiter is a line that consists ONLY of ``` with an optional language tag.
 _FENCE_RE = re.compile(r"^```(\w*)$")
 
 
 def validate_fences(text: str) -> list[str]:
-    """Stack‑based validator that only counts true fence delimiters."""
     issues = []
     stack = []
     for lineno, line in enumerate(text.split("\n"), 1):
@@ -174,8 +209,8 @@ def main():
         print(f"Test: {sample['name']}")
         raw = sample["raw"]
         cleaned = clean_deepseek_markdown(raw)
-        print("--- Cleaned output (first 1200 chars) ---")
-        print(cleaned[:1200])
+        print("--- Cleaned output (first 2000 chars) ---")
+        print(cleaned[:2000])
         issues = validate_fences(cleaned)
         if issues:
             print("\n⚠️  Issues detected:")
