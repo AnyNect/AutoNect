@@ -1,0 +1,409 @@
+@property --angle {
+    syntax: "<angle>";
+    initial-value: 0deg;
+    inherits: false;
+}
+
+:root {
+    --bg-main: #212121;
+    --bg-sidebar: #171717;
+    --bg-input: #2f2f2f;
+    --bg-user-bubble: #2f2f2f;
+    --bg-hover: #383838;
+    --border-color: rgba(255, 255, 255, 0.15);
+    
+    --text-primary: #ececec;
+    --text-secondary: #b4b4b4;
+    --text-muted: #676767;
+    --text-thinking: #8e8e8e;
+    
+    --accent-green: #10a37f;
+    --accent-blue: #0021ff;
+    --accent-yellow: #ffff00;
+    --accent-red: #f87171;
+
+    /* Portal Loader Colors */
+    --portal-text: #ffffff;
+    --portal-background: #212121;
+    --portal-primary: #0021ff;
+    --portal-secondary: #ffff00;
+    --angle: 0deg;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+}
+
+#app {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+/* Top Header */
+header {
+    height: 56px;
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: var(--bg-main);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    z-index: 10;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: 8px;
+    transition: background 0.2s;
+}
+
+.brand:hover {
+    background-color: var(--bg-hover);
+}
+
+.brand-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.brand-version {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+/* Main Chat Area */
+#chat-container {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-bottom: 20px;
+    scroll-behavior: smooth;
+}
+
+#chat-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+#chat-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+#chat-area {
+    width: 100%;
+    max-width: 768px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 24px 16px;
+}
+
+/* Chat Message Layout */
+.message-row {
+    display: flex;
+    width: 100%;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.message-row.user {
+    justify-content: flex-end;
+}
+
+.message-row.assistant {
+    justify-content: flex-start;
+}
+
+.message-content {
+    display: flex;
+    flex-direction: column;
+    max-width: 88%;
+    min-width: 0;
+}
+
+.assistant .message-content {
+    max-width: 100%;
+}
+
+.user .message-content {
+    max-width: 70%;
+}
+
+/* User Message Bubble */
+.user .bubble {
+    background-color: var(--bg-user-bubble);
+    color: var(--text-primary);
+    padding: 10px 16px;
+    border-radius: 20px;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    align-self: flex-end;
+}
+
+/* Assistant Message Styling */
+.assistant .bubble {
+    color: var(--text-primary);
+    font-size: 0.975rem;
+    line-height: 1.6;
+    word-break: break-word;
+    padding-top: 4px;
+}
+
+/* Thinking Block */
+.thinking-block {
+    margin-bottom: 8px;
+    background: transparent;
+    border: none;
+}
+
+.thinking-block summary::-webkit-details-marker {
+    display: none;
+}
+
+.thinking-block summary {
+    list-style: none;
+    padding: 4px 0;
+    cursor: pointer;
+    color: var(--text-thinking);
+    font-weight: 500;
+    font-size: 0.925rem;
+    user-select: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: color 0.15s ease;
+    outline: none;
+}
+
+.thinking-block summary:hover {
+    color: var(--text-primary);
+}
+
+.thinking-block summary .arrow-icon {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.2s ease;
+    opacity: 0.7;
+}
+
+.thinking-block summary:hover .arrow-icon {
+    opacity: 1;
+}
+
+.thinking-block[open] summary .arrow-icon {
+    transform: rotate(90deg);
+}
+
+.thinking-block-content {
+    padding: 8px 0 8px 12px;
+    border-left: 2px solid rgba(255, 255, 255, 0.1);
+    color: #8e8e8e;
+    font-style: italic;
+    font-size: 0.875rem;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    margin-top: 6px;
+    background: transparent;
+}
+
+/* Markdown Output */
+.assistant .bubble p {
+    margin-bottom: 1em;
+}
+
+.assistant .bubble p:last-child {
+    margin-bottom: 0;
+}
+
+.assistant .bubble code {
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    background-color: rgba(255, 255, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.875em;
+}
+
+.assistant .bubble pre {
+    background-color: #0d0d0d;
+    padding: 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 12px 0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.assistant .bubble pre code {
+    background-color: transparent;
+    padding: 0;
+    color: #e6e6e6;
+}
+
+.assistant .bubble ul, .assistant .bubble ol {
+    margin-left: 20px;
+    margin-bottom: 1em;
+}
+
+.assistant .bubble blockquote {
+    border-left: 3px solid var(--text-muted);
+    padding-left: 12px;
+    color: var(--text-secondary);
+    margin: 10px 0;
+}
+
+/* Input Container */
+#input-container {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 16px 24px 16px;
+    background: linear-gradient(180deg, rgba(33, 33, 33, 0) 0%, var(--bg-main) 30%);
+}
+
+.input-box {
+    width: 100%;
+    max-width: 768px;
+    background-color: var(--bg-input);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 26px;
+    padding: 10px 12px 10px 20px;
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    transition: border-color 0.2s;
+}
+
+.input-box:focus-within {
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+#prompt {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    resize: none;
+    font-family: inherit;
+    font-size: 1rem;
+    outline: none;
+    max-height: 200px;
+    line-height: 1.5;
+    padding: 4px 0;
+}
+
+#prompt::placeholder {
+    color: var(--text-muted);
+}
+
+#send-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background-color: #ffffff;
+    color: #000000;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s;
+    flex-shrink: 0;
+}
+
+#send-btn:disabled {
+    opacity: 0.2;
+    cursor: not-allowed;
+    background-color: #ffffff;
+}
+
+.footer-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 10px;
+    text-align: center;
+}
+
+/* Portal Loader */
+.portal-oval {
+    position: relative;
+    width: 160px;
+    height: 34px;
+    border-radius: 17px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 2px;
+    background-image: linear-gradient(var(--portal-background), var(--portal-background)),
+                      conic-gradient(from var(--angle), var(--portal-secondary), var(--portal-primary), var(--portal-text), var(--portal-background));
+    background-origin: border-box;
+    background-clip: padding-box, border-box;
+    border: 2px solid transparent;
+    animation: rotateBorder 1.5s linear infinite;
+    font-family: 'Courier New', Courier, monospace;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    margin-top: 2px;
+}
+
+@keyframes rotateBorder { to { --angle: 360deg; } }
+
+.portal-oval .inner-content {
+    width: 100%;
+    height: 100%;
+    border-radius: 15px;
+    background: var(--portal-background);
+    position: relative;
+    overflow: hidden;
+}
+
+.portal-oval .track {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    transition: transform 0.5s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.portal-oval .item {
+    height: 30px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--portal-text);
+}
+
+.portal-oval .icon { font-size: 13px; }
+.portal-oval .spin { animation: spin 1s linear infinite; display: inline-block; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
