@@ -26,7 +26,7 @@ browser automation, then safely execute commands on your local machine.
 
 ## 🖥️ Web Chat UI – Status
 
-### ✅ What's done
+### ✅ What's added
 - Send button
 - Input box
 - User and assistant message rendering
@@ -43,7 +43,7 @@ browser automation, then safely execute commands on your local machine.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Structure
 
 ```
 User
@@ -65,12 +65,12 @@ Command Extractor → Approval Layer → Persistent Shell → Output feeds back 
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Installation
 
 ### 1. Clone & enter the project
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/ZizouuRL/AutoNect
 cd AutoNect
 ```
 

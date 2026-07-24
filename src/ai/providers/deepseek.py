@@ -1,3 +1,5 @@
+import time
+from markdownify import markdownify as md
 from src.ai.provider import AIProvider
 from src.browser.manager import BrowserManager
 from src.browser.observer import DOMObserver
@@ -51,7 +53,6 @@ class DeepSeekProvider(AIProvider):
 
         print("[DeepSeek] Prompt injected")
         self._click_send()
-        self._wait_for_response()
 
     def _click_send(self):
         print("[DeepSeek] Clicking send...")
@@ -65,7 +66,7 @@ class DeepSeekProvider(AIProvider):
         print("[DeepSeek] Sent")
 
     def _wait_for_response(self):
-        print("[DeepSeek] Waiting for response (dedicated observer) ...")
+        print("[DeepSeek] Waiting for response (observer) ...")
 
         self.page.evaluate("""
             () => {
@@ -102,34 +103,32 @@ class DeepSeekProvider(AIProvider):
         print("[DeepSeek] Response finished")
 
     def get_response(self):
+        self._wait_for_response()
+
         print("[DeepSeek] Extracting response...")
 
-        # Locate the last assistant message
-        last_message = self.page.locator(".ds-message").last
+        # Extract thinking (from DOM, as before)
+        thinking_text = ""
+        thinking_elements = self.page.locator(".ds-think-content")
+        if thinking_elements.count() > 0:
+            thinking_text = "\n".join(
+                thinking_elements.nth(i).inner_text()
+                for i in range(thinking_elements.count())
+            )
 
-        # Collect ALL thinking-related content:
-        # - .ds-think-content        (reasoning paragraphs)
-        # - ._60aa7fb                (search results summary)
-        # - .e4c3fd02                (browsing status & links)
-        # In DOM order, preserving the natural flow.
-        thinking_blocks = last_message.locator(
-            ".ds-think-content, ._60aa7fb, .e4c3fd02"
-        )
-        all_thinking = []
-        for i in range(thinking_blocks.count()):
-            all_thinking.append(thinking_blocks.nth(i).inner_text())
-        all_thinking = "\n".join(all_thinking)
+        # Extract answer HTML
+        answer_html = ""
+        answer_elements = self.page.locator(".ds-assistant-message-main-content")
+        if answer_elements.count() > 0:
+            answer_html = answer_elements.last.inner_html()
 
-        # Extract answer text
-        answer_text = ""
-        answer_locator = self.page.locator(".ds-assistant-message-main-content")
-        if answer_locator.count() > 0:
-            answer_text = answer_locator.last.inner_text()
+        # Convert HTML → markdown (like DeepSeek's Copy button)
+        answer_markdown = md(answer_html, heading_style="ATX") if answer_html else ""
 
         print("[DeepSeek] Extraction complete")
         return {
-            "thinking": all_thinking,
-            "answer": answer_text
+            "thinking": thinking_text,
+            "answer": answer_markdown,
         }
 
     def close(self):

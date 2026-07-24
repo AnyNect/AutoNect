@@ -25,7 +25,7 @@ function scrollToBottom() {
     chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
-function addMessage(role, content, thinking = '') {
+function addMessage(role, content, thinking = '', commands = []) {
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
 
@@ -57,10 +57,141 @@ function addMessage(role, content, thinking = '') {
     }
 
     contentDiv.appendChild(bubble);
-    row.appendChild(contentDiv);
 
+    // Command cards (Gemini's integration)
+    if (commands && commands.length > 0) {
+        contentDiv.appendChild(createCommandSection(commands));
+    }
+
+    row.appendChild(contentDiv);
     chatArea.appendChild(row);
     scrollToBottom();
+}
+
+/**
+ * Toggles expand/collapse state for collapsible command cards.
+ */
+function toggleCommandCard(headerElem) {
+    const card = headerElem.closest('.command-card');
+    if (card) {
+        card.classList.toggle('expanded');
+    }
+}
+
+/**
+ * Creates the DOM container for inline assistant commands.
+ * @param {Array<{code: string}>} commands 
+ * @returns {HTMLElement}
+ */
+function createCommandSection(commands) {
+    const cmdSection = document.createElement('div');
+    cmdSection.className = 'command-section';
+
+    commands.forEach((cmd) => {
+        const commandCode = cmd.code || '';
+        const isLong = commandCode.length > 80;
+
+        const card = document.createElement('div');
+        card.className = `command-card ${isLong ? 'collapsible' : 'expanded'}`;
+
+        // Header for collapsible commands
+        if (isLong) {
+            const header = document.createElement('div');
+            header.className = 'command-header';
+            header.onclick = () => toggleCommandCard(header);
+            header.innerHTML = `
+                <span class="command-header-title">Command</span>
+                <svg class="command-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            `;
+            card.appendChild(header);
+        }
+
+        // Card Body
+        const body = document.createElement('div');
+        body.className = 'command-body';
+
+        const pre = document.createElement('pre');
+        pre.className = 'command-code';
+        const codeElem = document.createElement('code');
+        codeElem.textContent = commandCode;
+        pre.appendChild(codeElem);
+
+        const runBtn = document.createElement('button');
+        runBtn.className = 'command-run-btn';
+        runBtn.textContent = 'Run';
+
+        const outputArea = document.createElement('div');
+        outputArea.className = 'command-output-area';
+
+        runBtn.onclick = () => runCommand(commandCode, runBtn, outputArea);
+
+        body.appendChild(pre);
+        body.appendChild(runBtn);
+        body.appendChild(outputArea);
+        card.appendChild(body);
+
+        cmdSection.appendChild(card);
+    });
+
+    return cmdSection;
+}
+
+/**
+ * Handles executing the command via API call and displaying output/errors.
+ */
+async function runCommand(commandText, buttonElem, outputContainer) {
+    buttonElem.disabled = true;
+    buttonElem.textContent = 'Running…';
+    outputContainer.innerHTML = '';
+
+    try {
+        const response = await fetch('/api/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: commandText }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server returned HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        const outputBlock = document.createElement('div');
+        outputBlock.className = 'command-output-block';
+
+        if (data.stdout) {
+            const stdoutPre = document.createElement('pre');
+            stdoutPre.className = 'stdout';
+            stdoutPre.textContent = data.stdout;
+            outputBlock.appendChild(stdoutPre);
+        }
+
+        if (data.stderr) {
+            const stderrPre = document.createElement('pre');
+            stderrPre.className = 'stderr';
+            stderrPre.textContent = data.stderr;
+            outputBlock.appendChild(stderrPre);
+        }
+
+        const exitCodeSpan = document.createElement('span');
+        exitCodeSpan.className = 'exit-code';
+        exitCodeSpan.textContent = `Exit code: ${data.exit_code ?? 0}`;
+        outputBlock.appendChild(exitCodeSpan);
+
+        outputContainer.appendChild(outputBlock);
+    } catch (error) {
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'command-output-error';
+        errorDiv.textContent = `Error: ${error.message}`;
+        outputContainer.appendChild(errorDiv);
+    } finally {
+        buttonElem.disabled = false;
+        buttonElem.textContent = 'Run';
+        scrollToBottom();
+    }
 }
 
 function showLoading() {
@@ -181,7 +312,7 @@ async function sendMessage() {
 
         const data = await response.json();
         removeLoading();
-        addMessage('assistant', data.answer, data.thinking);
+        addMessage('assistant', data.answer, data.thinking, data.commands);
     } catch (error) {
         removeLoading();
         const errorDiv = document.createElement('div');

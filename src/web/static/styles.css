@@ -407,3 +407,167 @@ header {
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+/* ==========================================================================
+   Command Cards Styling
+   ========================================================================== */
+
+.command-section {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+
+.command-card {
+    background: #0d0d0d;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.2s ease;
+}
+
+.command-card:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Header for collapsible commands (>80 chars) */
+.command-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background-color: #141414;
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary, #b4b4b4);
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.command-header:hover {
+    background-color: #1a1a1a;
+    color: var(--text-primary, #ececec);
+}
+
+.command-arrow {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.2s ease;
+    opacity: 0.7;
+}
+
+.command-card.expanded .command-arrow {
+    transform: rotate(90deg);
+}
+
+/* Body & Code Block */
+.command-body {
+    display: block;
+}
+
+.command-card.collapsible .command-body {
+    display: none;
+}
+
+.command-card.collapsible.expanded .command-body {
+    display: block;
+}
+
+.command-code {
+    margin: 0;
+    padding: 14px;
+    background: transparent;
+    color: #e6e6e6;
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.command-code code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-family: inherit;
+}
+
+/* Full-width Run Button */
+.command-run-btn {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    background: #89b4fa;
+    color: #11111b;
+    border: none;
+    font-family: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+
+.command-run-btn:hover {
+    background: #74c7ec;
+}
+
+.command-run-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    background: #89b4fa;
+}
+
+/* Output Display Area */
+.command-output-area {
+    background: #050505;
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+.command-output-block {
+    padding: 12px 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.command-output-block pre {
+    margin: 0 0 8px 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+}
+
+.command-output-block pre:last-child {
+    margin-bottom: 0;
+}
+
+.command-output-block .stdout {
+    color: #a6e3a1;
+}
+
+.command-output-block .stderr {
+    color: #f38ba8;
+}
+
+.command-output-block .exit-code {
+    display: block;
+    color: #6c7086;
+    font-size: 0.8rem;
+    margin-top: 6px;
+}
+
+.command-output-error {
+    padding: 12px 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    color: #f38ba8;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
