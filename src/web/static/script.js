@@ -222,6 +222,10 @@ async function handleAllow(card) {
     const pulseRing = card.querySelector('.pulse-ring');
     const commandStr = card.dataset.command || '';
 
+    // Block the main send button during execution
+    isProcessing = true;
+    sendBtn.disabled = true;
+
     // UI: start execution
     if (cursor) cursor.classList.add('hidden');
     if (btnRow) btnRow.remove();
@@ -232,20 +236,21 @@ async function handleAllow(card) {
     updateHeaderTitleSmooth(titleElem, 'EXECUTING…', false);
 
     try {
-        const response = await fetch('/api/execute', {
+        // Step 1: execute the command
+        const execResponse = await fetch('/api/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ command: commandStr }),
         });
 
-        if (!response.ok) {
-            throw new Error(`Server returned HTTP ${response.status}`);
+        if (!execResponse.ok) {
+            throw new Error(`Server returned HTTP ${execResponse.status}`);
         }
 
-        const data = await response.json();
+        const data = await execResponse.json();
         progressBar.classList.remove('active');
 
-        // Determine state from exit code
+        // Update card with command result immediately
         let activeColor, stateText;
         if (data.exit_code === 0) {
             activeColor = 'var(--color-success)';
@@ -261,7 +266,6 @@ async function handleAllow(card) {
         statusDot.style.backgroundColor = activeColor;
         titleElem.style.color = activeColor;
 
-        // Pure terminal output — no exit code badges
         let outputHTML = '<div class="command-output-block">';
         if (data.stdout) {
             outputHTML += `<pre style="color: ${activeColor};">${escapeHtml(data.stdout)}</pre>`;
@@ -275,6 +279,33 @@ async function handleAllow(card) {
         outputHTML += '</div>';
 
         outputArea.innerHTML += outputHTML;
+
+        // Collapse card
+        card.classList.remove('expanded');
+        updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
+
+        // Step 2: feed to AI and get analysis (separate request)
+        try {
+            const fbResponse = await fetch('/api/ai-feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: commandStr,
+                    stdout: data.stdout,
+                    stderr: data.stderr,
+                    exit_code: data.exit_code,
+                }),
+            });
+
+            if (fbResponse.ok) {
+                const fbData = await fbResponse.json();
+                if (fbData.answer) {
+                    addMessage('assistant', fbData.answer, fbData.thinking);
+                }
+            }
+        } catch (fbError) {
+            console.error('AI feedback failed:', fbError);
+        }
 
     } catch (error) {
         progressBar.classList.remove('active');
@@ -293,11 +324,13 @@ async function handleAllow(card) {
                 <pre style="color: ${activeColor};">Error: ${escapeHtml(error.message)}</pre>
             </div>
         `;
-    }
 
-    // Collapse and show command in header
-    card.classList.remove('expanded');
-    updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
+        card.classList.remove('expanded');
+        updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
+    } finally {
+        isProcessing = false;
+        sendBtn.disabled = !promptInput.value.trim();
+    }
 }
 
 /* ── Loading / Portal ── */
