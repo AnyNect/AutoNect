@@ -1,4 +1,5 @@
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -79,14 +80,25 @@ async def chat(request: ChatRequest):
     thinking = response.get("thinking", "")
     answer = response.get("answer", "")
 
-    # Extract commands from the already‑clean markdown
-    commands = extract_commands(answer)
+    # Extract commands from the answer
+    answer_commands = extract_commands(answer)
+
+    # Filter out commands that appeared in thinking
+    thinking_commands = extract_commands(thinking)
+    thinking_codes = {cmd["code"] for cmd in thinking_commands}
+    commands = [cmd for cmd in answer_commands if cmd["code"] not in thinking_codes]
+
+    # Remove ```command blocks from the answer so the markdown bubble
+    # doesn't show a duplicate
+    answer = re.sub(r'```command\s*\n.*?```\n?', '', answer, flags=re.DOTALL)
 
     return ChatResponse(thinking=thinking, answer=answer, commands=commands)
 
 
 @app.post("/api/execute", response_model=ExecuteResponse)
 async def execute(request: ExecuteRequest):
+    """Run a shell command and return stdout, stderr, exit_code."""
+    print(f"[Execute] Received command: {request.command[:100]}...")
     try:
         proc = await asyncio.create_subprocess_shell(
             request.command,
@@ -94,10 +106,17 @@ async def execute(request: ExecuteRequest):
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
+        stdout_str = stdout.decode(errors="replace") if stdout else ""
+        stderr_str = stderr.decode(errors="replace") if stderr else ""
+        exit_code = proc.returncode if proc.returncode is not None else -1
+
+        print(f"[Execute] Exit code: {exit_code}, stdout len: {len(stdout_str)}, stderr len: {len(stderr_str)}")
+
         return ExecuteResponse(
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-            exit_code=proc.returncode or 0,
+            stdout=stdout_str,
+            stderr=stderr_str,
+            exit_code=exit_code,
         )
     except Exception as e:
+        print(f"[Execute] Error: {e}")
         return ExecuteResponse(stdout="", stderr=str(e), exit_code=1)
