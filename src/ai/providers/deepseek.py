@@ -65,8 +65,36 @@ class DeepSeekProvider(AIProvider):
         button.click()
         print("[DeepSeek] Sent")
 
+    def _inject_retry_observer(self):
+        """
+        Inject a MutationObserver that auto‑clicks DeepSeek's
+        "Check network and retry" button the instant it appears.
+        """
+        self.page.evaluate("""
+            () => {
+                if (window.__autonect_retry_observer) return;
+                const observer = new MutationObserver(() => {
+                    const retryBtn = document.querySelector(
+                        'div[role="button"].ds-button--warning'
+                    );
+                    if (retryBtn) {
+                        console.log('[AutoNect] Auto‑clicking retry button');
+                        retryBtn.click();
+                    }
+                });
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                });
+                window.__autonect_retry_observer = observer;
+            }
+        """)
+
     def _wait_for_response(self):
-        print("[DeepSeek] Waiting for response (observer) ...")
+        print("[DeepSeek] Waiting for response (retry observer active) ...")
+
+        # Inject the retry observer BEFORE waiting
+        self._inject_retry_observer()
 
         self.page.evaluate("""
             () => {
@@ -95,7 +123,7 @@ class DeepSeekProvider(AIProvider):
         try:
             self.page.wait_for_function(
                 "window.__autonect_done",
-                timeout=120000
+                timeout=180000
             )
         except Exception:
             raise TimeoutError("DeepSeek response timeout")
@@ -112,58 +140,58 @@ class DeepSeekProvider(AIProvider):
             () => {
                 const blocks = document.querySelectorAll('.ds-think-content');
                 if (blocks.length === 0) return '';
-                // Get the last thinking block (current message only)
                 const lastBlock = blocks[blocks.length - 1];
                 const clone = lastBlock.cloneNode(true);
-                // Remove code blocks so they don't pollute the thinking text
                 clone.querySelectorAll('.md-code-block').forEach(el => el.remove());
                 return clone.innerText.trim();
             }
         """)
 
-        # Extract answer from the LAST assistant message
-        answer_markdown = self.page.evaluate("""
+        # Extract answer AND commands from the LAST assistant message
+        answer_data = self.page.evaluate("""
             () => {
                 const containers = document.querySelectorAll('.ds-assistant-message-main-content');
-                if (containers.length === 0) return '';
+                if (containers.length === 0) return { html: '', codeBlocks: [], commands: [] };
                 const container = containers[containers.length - 1];
-                
-                // Collect code blocks
+
                 const codeBlocks = [];
+                const commands = [];
                 const clone = container.cloneNode(true);
-                clone.querySelectorAll('.md-code-block').forEach((block, index) => {
+
+                clone.querySelectorAll('.md-code-block').forEach((block) => {
                     const langTag = block.querySelector('.d813de27');
                     const pre = block.querySelector('pre');
-                    codeBlocks.push({
-                        lang: langTag ? langTag.textContent.trim() : '',
-                        code: pre ? pre.textContent.trim() : ''
-                    });
+                    const lang = langTag ? langTag.textContent.trim() : '';
+                    const code = pre ? pre.textContent.trim() : '';
+
+                    if (lang === 'command') {
+                        commands.push({ code: code, raw: code });
+                    }
+                    codeBlocks.push({ lang, code });
                 });
-                
-                // Remove code blocks from the clone
+
                 clone.querySelectorAll('.md-code-block').forEach(el => el.remove());
-                
+
                 return {
                     html: clone.innerHTML,
-                    codeBlocks: codeBlocks
+                    codeBlocks: codeBlocks,
+                    commands: commands,
                 };
             }
         """)
 
-        # Convert the remaining HTML to markdown
-        from markdownify import markdownify as md
-        html_content = answer_markdown["html"] if answer_markdown else ""
-        code_blocks = answer_markdown["codeBlocks"] if answer_markdown else []
-        
+        html_content = answer_data["html"] if answer_data else ""
+        code_blocks = answer_data["codeBlocks"] if answer_data else []
+        commands = answer_data["commands"] if answer_data else []
+
         markdown = md(html_content, heading_style="ATX") if html_content else ""
 
-        # Clean Copy/Download artifacts
         import re
         markdown = re.sub(r'\n*Copy\n*', '\n', markdown)
         markdown = re.sub(r'\n*Download\n*', '\n', markdown)
         markdown = re.sub(r'\n{3,}', '\n\n', markdown)
 
-        # Append code blocks
+        # Append code blocks at the end
         for block in code_blocks:
             lang = block["lang"]
             code = block["code"]
@@ -178,63 +206,8 @@ class DeepSeekProvider(AIProvider):
         return {
             "thinking": thinking_text,
             "answer": markdown,
+            "commands": commands,
         }
-
-    def _extract_answer_as_markdown(self) -> str:
-        """
-        Extract answer content as clean markdown.
-        Uses two-step JS evaluation:
-          1. Collect code blocks and their positions.
-          2. Get the textContent of the answer (markdownify handles the rest).
-        """
-        # Step 1 — collect code blocks
-        code_blocks = self.page.evaluate("""
-            () => {
-                const blocks = [];
-                const elements = document.querySelectorAll('.md-code-block');
-                elements.forEach((el) => {
-                    const langEl = el.querySelector('.d813de27');
-                    const pre = el.querySelector('pre');
-                    blocks.push({
-                        lang: langEl ? langEl.textContent.trim() : '',
-                        code: pre ? pre.textContent.trim() : ''
-                    });
-                });
-                return blocks;
-            }
-        """)
-
-        # Step 2 — get the answer HTML, remove code blocks, convert to markdown
-        html_content = self.page.evaluate("""
-            () => {
-                const container = document.querySelector('.ds-assistant-message-main-content');
-                if (!container) return '';
-                // Clone and remove code blocks
-                const clone = container.cloneNode(true);
-                clone.querySelectorAll('.md-code-block').forEach(el => el.remove());
-                return clone.innerHTML;
-            }
-        """)
-
-        # Convert HTML → markdown
-        markdown = md(html_content, heading_style="ATX") if html_content else ""
-
-        # Strip Copy/Download artifacts from the markdown
-        import re
-        markdown = re.sub(r'\n*Copy\n*', '\n', markdown)
-        markdown = re.sub(r'\n*Download\n*', '\n', markdown)
-        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
-
-        # Append code blocks at the end (most reliable placement)
-        for block in code_blocks:
-            lang = block["lang"]
-            code = block["code"]
-            if lang:
-                markdown += f"\n```{lang}\n{code}\n```\n"
-            else:
-                markdown += f"\n```\n{code}\n```\n"
-
-        return markdown.strip()
 
     def close(self):
         self.browser.close()

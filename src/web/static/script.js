@@ -81,7 +81,22 @@ function addMessage(role, content, thinking = '', commands = []) {
 
 function toggleCommandCard(headerElem) {
     const card = headerElem.closest('.command-card');
+    const titleElem = card.querySelector('.command-header-title');
+    const stateText = card.dataset.stateText || 'PENDING APPROVAL';
+    const commandStr = card.dataset.command || '';
+
     card.classList.toggle('expanded');
+
+    if (card.classList.contains('expanded')) {
+        // Expanded → show status text
+        updateHeaderTitleSmooth(titleElem, stateText, false);
+        // Restore the status color
+        const activeColor = card.dataset.activeColor || 'var(--color-pending)';
+        titleElem.style.color = activeColor;
+    } else {
+        // Collapsed → show truncated command
+        updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
+    }
 }
 
 function updateHeaderTitleSmooth(titleElem, newText, isCommand) {

@@ -140,23 +140,35 @@ async def execute(request: ExecuteRequest):
     )
 
 
-@app.post("/api/ai-feedback", response_model=AIFeedbackResponse)
-async def ai_feedback(request: AIFeedbackRequest):
-    """Feed command output to the AI and return its analysis."""
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
     if not provider:
         return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
 
     loop = asyncio.get_running_loop()
 
-    def send_wrapped_and_get():
-        wrapped = build_wrapped_command_output(
-            request.command, request.exit_code, request.stdout, request.stderr
-        )
-        provider.send_prompt(wrapped)
+    def send_and_get():
+        full_prompt = f"{SYSTEM_PROMPT}\n\n{request.prompt}" if SYSTEM_PROMPT else request.prompt
+        provider.send_prompt(full_prompt)
         return provider.get_response()
 
-    ai_response = await loop.run_in_executor(None, send_wrapped_and_get)
-    return AIFeedbackResponse(
-        thinking=ai_response.get("thinking", ""),
-        answer=ai_response.get("answer", ""),
-    )
+    response = await loop.run_in_executor(None, send_and_get)
+
+    thinking = response.get("thinking", "")
+    answer = response.get("answer", "")
+    commands = response.get("commands", [])   # from DOM extraction
+
+    # ── Robust command detection ──
+    # If DOM extraction found nothing, fall back to regex on the answer.
+    if not commands:
+        commands = extract_commands(answer)
+
+    # Also scan the thinking text for commands we should filter out.
+    thinking_commands = extract_commands(thinking)
+    thinking_codes = {cmd["code"] for cmd in thinking_commands}
+    commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
+
+    # Remove ```command blocks from the displayed answer
+    answer = re.sub(r'```command\s*\n.*?```\n?', '', answer, flags=re.DOTALL)
+
+    return ChatResponse(thinking=thinking, answer=answer, commands=commands)

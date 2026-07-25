@@ -114,6 +114,34 @@ header {
     font-weight: 500;
 }
 
+/* ── Global scrollbar theming ── */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #2e2e2e #1a1a1a;
+}
+
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: #2e2e2e;
+    border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: #3a3a3a;
+}
+
+*::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
 /* Main Chat Area */
 #chat-container {
     flex: 1;
@@ -123,15 +151,6 @@ header {
     align-items: center;
     padding-bottom: 20px;
     scroll-behavior: smooth;
-}
-
-#chat-container::-webkit-scrollbar {
-    width: 8px;
-}
-
-#chat-container::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
 }
 
 #chat-area {
@@ -475,6 +494,8 @@ header {
     display: flex;
     align-items: center;
     gap: 14px;
+    min-width: 0;
+    flex: 1;
     overflow: visible;
 }
 
@@ -524,6 +545,8 @@ header {
     overflow: hidden;
     text-overflow: ellipsis;
     opacity: 1;
+    flex: 1;
+    min-width: 0;
 }
 
 .command-header-title.fading {
@@ -585,9 +608,10 @@ header {
 }
 
 .command-code::before {
-    content: "$ ";
-    color: var(--text-sub);
+    content: "$";
+    color: var(--color-success);
     font-weight: 600;
+    margin-right: 10px;
     user-select: none;
 }
 
