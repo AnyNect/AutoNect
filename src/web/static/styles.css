@@ -16,6 +16,7 @@
     --text-secondary: #b4b4b4;
     --text-muted: #676767;
     --text-thinking: #8e8e8e;
+    --text-sub: #b4b4b4;
     
     --accent-green: #10a37f;
     --accent-blue: #0021ff;
@@ -28,6 +29,9 @@
     --portal-primary: #0021ff;
     --portal-secondary: #ffff00;
     --angle: 0deg;
+
+    /* Crisp Cool Lemon Yellow */
+    --color-queued: #fde047;
 
     /* ── Command Card Matte Palette ── */
     --bg-canvas: #121316;
@@ -571,7 +575,7 @@ header {
 
 .command-card.expanded .command-arrow {
     transform: rotate(90deg);
-    stroke: var(--text-main);
+    stroke: var(--text-primary);
 }
 
 /* Body Wrapper — smooth height animation via CSS grid */
@@ -595,7 +599,7 @@ header {
     margin: 0;
     padding: 16px 18px;
     background: var(--bg-code);
-    color: var(--text-main);
+    color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 0.875rem;
     line-height: 1.5;
@@ -712,7 +716,7 @@ header {
     left: -40%;
     width: 40%;
     height: 100%;
-    background: var(--text-main);
+    background: var(--text-primary);
     animation: scanCmd 1s infinite linear;
 }
 
@@ -730,6 +734,271 @@ header {
     background: transparent;
     padding: 0;
     font-family: inherit;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Queue Bubble — Blended Dark Theme
+   ══════════════════════════════════════════════════════════════ */
+
+.input-wrapper {
+    width: 100%;
+    max-width: 768px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.queue-bubble {
+    display: none;
+    background: #282828;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    margin-bottom: 10px;
+    width: 100%;
+    overflow: visible;
+    animation: queueFadeIn 0.3s ease-out;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+.queue-bubble-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: #282828;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 16px 16px 0 0;
+    transition: background 0.2s, border-radius 0.35s ease;
+}
+
+.queue-bubble:not(.expanded) .queue-bubble-header {
+    border-radius: 16px;
+}
+
+.queue-bubble-header:hover {
+    background: #333333;
+}
+
+.queue-bubble-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #b4b4b4;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.queue-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.queue-badge {
+    background: rgba(253, 224, 71, 0.12);
+    color: var(--color-queued);
+    border: 1px solid rgba(253, 224, 71, 0.22);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.queue-badge.paused {
+    background: rgba(248, 113, 113, 0.14);
+    color: #f87171;
+    border-color: rgba(248, 113, 113, 0.25);
+}
+
+.pause-queue-btn {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: var(--text-primary);
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    padding: 3px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.pause-queue-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.queue-bubble-arrow {
+    width: 14px;
+    height: 14px;
+    stroke: var(--text-muted);
+    transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.queue-bubble.expanded .queue-bubble-arrow {
+    transform: rotate(90deg);
+}
+
+.queue-bubble-body {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.queue-bubble.expanded .queue-bubble-body {
+    grid-template-rows: 1fr;
+}
+
+.queue-bubble-body-inner {
+    overflow: hidden;
+    padding: 0 12px;
+    display: flex;
+    flex-direction: column;
+}
+
+.queue-bubble.expanded .queue-bubble-body-inner {
+    padding: 4px 12px 10px 12px;
+}
+
+.queue-message {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px;
+    border-radius: 8px;
+    background: transparent;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    user-select: none;
+    touch-action: none;
+    cursor: grab;
+    position: relative;
+    z-index: 1;
+    transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), background 0.15s;
+}
+
+.queue-message:first-child {
+    border-top: none;
+}
+
+.queue-message:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.queue-message.dragging {
+    z-index: 10;
+    opacity: 1 !important;
+    background: var(--bg-hover);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.12);
+    transition: none !important;
+}
+
+.drag-handle {
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 2px 0 2px;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
+.queue-message-left {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+}
+
+.queue-number {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    width: 16px;
+    text-align: center;
+    flex-shrink: 0;
+    pointer-events: none;
+    padding-top: 3px;
+}
+
+.queue-prompt {
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    flex: 1;
+    cursor: pointer;
+    padding-top: 2px;
+    line-height: 1.4;
+}
+
+.edit-input {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    padding: 4px 8px;
+    outline: none;
+    resize: none;
+    line-height: 1.4;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.queue-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-top: 2px;
+}
+
+.task-action-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.task-action-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.task-action-btn.delete:hover {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.1);
+}
+
+.task-action-btn.save:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+@keyframes queueFadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Keyframes */
