@@ -1,4 +1,6 @@
 import asyncio
+import uuid
+from typing import Optional
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,6 +24,9 @@ try:
 except FileNotFoundError:
     SYSTEM_PROMPT = ""
 
+# Session tracking: store if system prompt has been sent
+session_data = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,6 +45,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 class ChatRequest(BaseModel):
     prompt: str
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -93,8 +99,17 @@ async def chat(request: ChatRequest):
 
     loop = asyncio.get_running_loop()
 
-    def send_and_get():
+    # Determine the full prompt and session handling before entering executor
+    if request.session_id is None or request.session_id not in session_data:
+        # First message for this session: send system prompt
+        if request.session_id is None:
+            request.session_id = str(uuid.uuid4())
         full_prompt = f"{SYSTEM_PROMPT}\n\n{request.prompt}" if SYSTEM_PROMPT else request.prompt
+        session_data[request.session_id] = True
+    else:
+        full_prompt = request.prompt
+
+    def send_and_get():
         provider.send_prompt(full_prompt)
         return provider.get_response()
 
@@ -114,8 +129,8 @@ async def chat(request: ChatRequest):
     thinking_codes = {cmd["code"] for cmd in thinking_commands}
     commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
 
-    # Remove ```command blocks from the displayed answer
-    answer = re.sub(r'```command\s*\n.*?```\n?', '', answer, flags=re.DOTALL)
+    # NOTE: We no longer strip ```command blocks from the answer.
+    # The frontend replaces them in-place with interactive command cards.
 
     return ChatResponse(thinking=thinking, answer=answer, commands=commands)
 

@@ -17,8 +17,18 @@ class DeepSeekProvider(AIProvider):
     def connect(self):
         print("[DeepSeek] Connecting...")
         self.page = self.browser.launch()
-        self.page.goto("https://chat.deepseek.com")
-        self.page.wait_for_load_state("networkidle")
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.page.goto("https://chat.deepseek.com")
+                self.page.wait_for_load_state("networkidle")
+                break
+            except Exception as e:
+                print(f"[DeepSeek] Page load attempt {attempt} failed: {e}")
+                if attempt == max_retries:
+                    raise
+                time.sleep(2)
 
         self.observer = DOMObserver(self.page)
         self.observer.start()
@@ -173,7 +183,7 @@ class DeepSeekProvider(AIProvider):
                     }
                     codeBlocks.push({ idx, lang, code });
 
-                    // Replace the code block with a safe, alphanumeric placeholder
+                    // Replace code block with placeholder
                     const placeholder = document.createTextNode(
                         `\n\nCODEBLOCKPLACEHOLDER${idx}\n\n`
                     );
@@ -206,14 +216,20 @@ class DeepSeekProvider(AIProvider):
         code_bg = "#4a4a4a"        # Main Code Background
         code_text = "#e6e6e6"      # Code Text Color
 
-        # Replace placeholders with pure HTML containers with a sticky header bar
+        # Replace placeholders safely using string replacement instead of regex
+        # This prevents crashes or failure to replace if the code contains regex syntax like \n or \1
         for block in code_blocks:
             idx = block["idx"]
             lang = block["lang"]
             code = block["code"]
-            placeholder_pattern = r'CODEBLOCKPLACEHOLDER' + str(idx)
+            placeholder_str = f"CODEBLOCKPLACEHOLDER{idx}"
 
             display_lang = lang if lang else "text"
+
+            if display_lang == "command":
+                # Keep the command block in markdown so script.js can parse it and replace it inline
+                markdown = markdown.replace(placeholder_str, f"\n\n```command\n{code}\n```\n\n")
+                continue
 
             # Encode raw code to Base64 for safe clipboard execution
             encoded_code = base64.b64encode(code.encode('utf-8')).decode('utf-8')
@@ -226,7 +242,7 @@ class DeepSeekProvider(AIProvider):
 
             # Unified HTML Card with sticky header bar styling
             formatted_block = (
-                f'<div style="background-color: {code_bg} !important; border-radius: 8px; margin: 1em 0; font-family: monospace; position: relative;">'
+                f'<div style="background-color: {code_bg} !important; border-radius: 8px; margin: 1em 0; font-family: monospace; position: relative; border: 1px solid rgba(255,255,255,0.1);">'
                 f'<div style="display: flex; justify-content: space-between; align-items: center; '
                 f'background-color: {header_bg} !important; color: {header_text}; padding: 8px 12px; font-size: 13px; '
                 f'position: sticky; top: 0; z-index: 10; border-top-left-radius: 8px; border-top-right-radius: 8px;">'
@@ -246,7 +262,7 @@ class DeepSeekProvider(AIProvider):
                 f'</div>'
             )
 
-            markdown = re.sub(placeholder_pattern, f"\n\n{formatted_block}\n\n", markdown, flags=re.MULTILINE)
+            markdown = markdown.replace(placeholder_str, f"\n\n{formatted_block}\n\n")
 
         # Safety net: remove any placeholders that weren't replaced
         markdown = re.sub(r'\s*CODEBLOCKPLACEHOLDER\d+\s*', '\n', markdown)

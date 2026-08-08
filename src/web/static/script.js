@@ -3,6 +3,7 @@ const chatArea = document.getElementById('chat-area');
 const chatContainer = document.getElementById('chat-container');
 const promptInput = document.getElementById('prompt');
 const sendBtn = document.getElementById('send-btn');
+const sessionId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
 
 let animationActive = false;
 let isProcessing = false;          // true when AI is generating
@@ -96,7 +97,7 @@ async function sendToAI(promptText) {
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: promptText }),
+            body: JSON.stringify({ prompt: promptText, session_id: sessionId }),
         });
         if (!response.ok) throw new Error('Server returned ' + response.status);
         const data = await response.json();
@@ -248,8 +249,6 @@ function renderQueue() {
    Chat messages
    ═══════════════════════════════════════════════════════════════ */
 
-function stripCommandBlocks(markdown) { return markdown.replace(/```command[\s\S]*?```/g, ''); }
-
 function addMessage(role, content, thinking = '', commands = []) {
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
@@ -267,17 +266,51 @@ function addMessage(role, content, thinking = '', commands = []) {
         contentDiv.appendChild(details);
     }
 
-    let displayContent = content;
-    if (commands && commands.length > 0) displayContent = stripCommandBlocks(content);
-
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    if (role === 'assistant') bubble.innerHTML = marked.parse(displayContent);
-    else bubble.textContent = displayContent;
+    
+    if (role === 'assistant') {
+        bubble.innerHTML = marked.parse(content);
+        
+        // INLINE COMMAND CARDS: Replace matching <pre> blocks dynamically
+        if (commands && commands.length > 0) {
+            let remainingCommands = [...commands];
+            const preBlocks = bubble.querySelectorAll('pre');
+
+            preBlocks.forEach((preEl) => {
+                const codeEl = preEl.querySelector('code');
+                if (!codeEl) return;
+
+                const codeText = codeEl.textContent.trim();
+                const isCommandClass = codeEl.className.includes('command') || codeEl.className.includes('language-command');
+
+                // Match by EXACT text to bypass markdown class stripping issues
+                const matchIndex = remainingCommands.findIndex(cmd => cmd.code.trim() === codeText);
+
+                if (matchIndex !== -1) {
+                    const cmd = remainingCommands[matchIndex];
+                    const cmdSection = createCommandSection([cmd]);
+                    preEl.parentNode.replaceChild(cmdSection, preEl);
+                    remainingCommands.splice(matchIndex, 1);
+                } else if (isCommandClass && remainingCommands.length > 0) {
+                    const cmd = remainingCommands[0];
+                    const cmdSection = createCommandSection([cmd]);
+                    preEl.parentNode.replaceChild(cmdSection, preEl);
+                    remainingCommands.shift();
+                }
+            });
+
+            // Fallback for any commands that weren't found inline (so they don't vanish)
+            if (remainingCommands.length > 0) {
+                const fallbackSection = createCommandSection(remainingCommands);
+                bubble.appendChild(fallbackSection);
+            }
+        }
+    } else {
+        bubble.textContent = content;
+    }
+    
     contentDiv.appendChild(bubble);
-
-    if (commands && commands.length > 0) contentDiv.appendChild(createCommandSection(commands));
-
     row.appendChild(contentDiv);
     chatArea.appendChild(row);
     scrollToBottom();
