@@ -1,10 +1,17 @@
 import asyncio
+import json
+import os
+import pty
+import signal
 import uuid
+import fcntl
+import termios
+import struct
 from typing import Optional
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -24,7 +31,7 @@ try:
 except FileNotFoundError:
     SYSTEM_PROMPT = ""
 
-# Session tracking: store if system prompt has been sent
+# Session tracking
 session_data = {}
 
 
@@ -54,16 +61,6 @@ class ChatResponse(BaseModel):
     commands: list[dict] = []
 
 
-class ExecuteRequest(BaseModel):
-    command: str
-
-
-class ExecuteResponse(BaseModel):
-    stdout: str
-    stderr: str
-    exit_code: int
-
-
 class AIFeedbackRequest(BaseModel):
     command: str
     stdout: str
@@ -89,16 +86,13 @@ def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stde
 
 
 def _extract_response(response: dict) -> tuple[str, str, list[dict]]:
-    """Extract thinking, answer, and commands from a provider response dict."""
     thinking = response.get("thinking", "")
     answer = response.get("answer", "")
     commands = response.get("commands", [])
 
-    # If DOM extraction found nothing, fall back to regex on the answer.
     if not commands:
         commands = extract_commands(answer)
 
-    # Also scan the thinking text for commands we should filter out.
     thinking_commands = extract_commands(thinking)
     thinking_codes = {cmd["code"] for cmd in thinking_commands}
     commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
@@ -118,9 +112,7 @@ async def chat(request: ChatRequest):
 
     loop = asyncio.get_running_loop()
 
-    # Determine the full prompt and session handling before entering executor
     if request.session_id is None or request.session_id not in session_data:
-        # First message for this session: send system prompt
         if request.session_id is None:
             request.session_id = str(uuid.uuid4())
         full_prompt = f"{SYSTEM_PROMPT}\n\n{request.prompt}" if SYSTEM_PROMPT else request.prompt
@@ -134,35 +126,157 @@ async def chat(request: ChatRequest):
 
     response = await loop.run_in_executor(None, send_and_get)
     thinking, answer, commands = _extract_response(response)
-
     return ChatResponse(thinking=thinking, answer=answer, commands=commands)
 
 
-@app.post("/api/execute", response_model=ExecuteResponse)
-async def execute(request: ExecuteRequest):
-    """Run a shell command and return stdout, stderr, exit_code immediately."""
-    print(f"[Execute] Running: {request.command[:100]}...")
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            request.command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        stdout_str = stdout.decode(errors="replace") if stdout else ""
-        stderr_str = stderr.decode(errors="replace") if stderr else ""
-        exit_code = proc.returncode if proc.returncode is not None else -1
-    except Exception as e:
-        stdout_str = ""
-        stderr_str = str(e)
-        exit_code = 1
+@app.websocket("/ws/execute")
+async def websocket_execute(websocket: WebSocket):
+    await websocket.accept()
 
-    print(f"[Execute] Exit code: {exit_code}")
-    return ExecuteResponse(
-        stdout=stdout_str,
-        stderr=stderr_str,
-        exit_code=exit_code,
-    )
+    # Receive command from client
+    init_msg = await websocket.receive_text()
+    try:
+        cmd_data = json.loads(init_msg)
+        command = cmd_data.get("command", "")
+    except Exception:
+        await websocket.close(code=4000, reason="Invalid JSON")
+        return
+
+    if not command:
+        await websocket.close(code=4000, reason="No command provided")
+        return
+
+    print(f"[WebSocket] Running: {command[:100]}...")
+
+    # Fork PTY
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        # Child: become session leader (creates new process group)
+        try:
+            os.setsid()
+        except OSError:
+            pass
+
+        # Execute command via shell
+        os.execvp("/bin/sh", ["/bin/sh", "-c", command])
+        os._exit(1)
+
+    # Parent: set master_fd to non-blocking (write safety)
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    loop = asyncio.get_running_loop()
+    output_chunks = []
+    exit_status = None
+
+    # Read from PTY using asyncio reader event
+    reader_queue = asyncio.Queue()
+
+    def pty_reader_callback():
+        try:
+            data = os.read(master_fd, 4096)
+            if data:
+                reader_queue.put_nowait(data)
+            else:
+                reader_queue.put_nowait(None)  # EOF
+        except (OSError, BlockingIOError):
+            pass
+
+    loop.add_reader(master_fd, pty_reader_callback)
+
+    # Wait for process exit in a thread
+    async def wait_for_exit():
+        nonlocal exit_status
+        _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
+        exit_status = os.waitstatus_to_exitcode(status)
+        return exit_status
+
+    async def read_pty():
+        while True:
+            data = await reader_queue.get()
+            if data is None:
+                break
+            output_chunks.append(data)
+            await websocket.send_bytes(data)
+
+    async def write_ws_to_pty():
+        try:
+            while True:
+                msg = await websocket.receive()
+                if "text" in msg:
+                    try:
+                        obj = json.loads(msg["text"])
+                    except json.JSONDecodeError:
+                        # Treat as raw stdin
+                        try:
+                            os.write(master_fd, msg["text"].encode())
+                        except OSError:
+                            break
+                        continue
+
+                    if obj.get("type") == "resize":
+                        cols = obj.get("cols", 80)
+                        rows = obj.get("rows", 24)
+                        try:
+                            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                        except OSError as e:
+                            print(f"Resize error: {e}")
+                    elif obj.get("type") == "signal":
+                        sig = getattr(signal, obj.get("signal", ""), None)
+                        if sig and pid > 0:
+                            try:
+                                os.killpg(pid, sig)
+                            except OSError:
+                                pass
+                    elif obj.get("type") == "stdin":
+                        try:
+                            os.write(master_fd, obj["data"].encode())
+                        except OSError:
+                            break
+                elif "bytes" in msg:
+                    try:
+                        os.write(master_fd, msg["bytes"])
+                    except OSError:
+                        break
+        except WebSocketDisconnect:
+            pass
+
+    reader_task = asyncio.create_task(read_pty())
+    writer_task = asyncio.create_task(write_ws_to_pty())
+    exit_task = asyncio.create_task(wait_for_exit())
+
+    # Wait for process to finish
+    await exit_task
+
+    # Stop the reader and drain final bytes
+    loop.remove_reader(master_fd)
+    await reader_queue.put(None)  # signal stop
+
+    try:
+        await asyncio.wait_for(reader_task, timeout=1)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+    writer_task.cancel()
+
+    # Collect final output
+    final_output = b"".join(output_chunks).decode(errors="replace")
+
+    # Send exit message
+    await websocket.send_text(json.dumps({
+        "type": "exit",
+        "code": exit_status if exit_status is not None else -1,
+        "output": final_output
+    }))
+
+    await websocket.close()
+
+    # Cleanup
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
 
 
 @app.post("/api/ai-feedback", response_model=AIFeedbackResponse)

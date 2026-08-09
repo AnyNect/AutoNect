@@ -295,10 +295,8 @@ function addMessage(role, content, thinking = '', commands = []) {
 
         // Apply Highlight.js to any code blocks that were injected as raw HTML
         bubble.querySelectorAll('pre code[class*="language-"]').forEach((codeEl) => {
-            // Don't touch command blocks (they become command cards)
             if (codeEl.closest('.command-section')) return;
             hljs.highlightElement(codeEl);
-            // Remove the hardcoded text colour from the parent <pre> so the theme's colours work
             const pre = codeEl.closest('pre');
             if (pre) pre.style.color = '';
         });
@@ -315,7 +313,6 @@ function addMessage(role, content, thinking = '', commands = []) {
                 const codeText = codeEl.textContent.trim();
                 const isCommandClass = codeEl.className.includes('command') || codeEl.className.includes('language-command');
 
-                // Match by EXACT text to bypass markdown class stripping issues
                 const matchIndex = remainingCommands.findIndex(cmd => cmd.code.trim() === codeText);
 
                 if (matchIndex !== -1) {
@@ -331,7 +328,6 @@ function addMessage(role, content, thinking = '', commands = []) {
                 }
             });
 
-            // Fallback for any commands that weren't found inline (so they don't vanish)
             if (remainingCommands.length > 0) {
                 const fallbackSection = createCommandSection(remainingCommands);
                 bubble.appendChild(fallbackSection);
@@ -355,6 +351,13 @@ function toggleCommandCard(headerElem) {
     const card = headerElem.closest('.command-card');
     card.classList.toggle('expanded');
     updateCommandCardTitle(card);
+
+    // If there's a terminal, refit on expand
+    if (card.classList.contains('expanded') && card._term) {
+        setTimeout(() => {
+            if (card._fitAddon) card._fitAddon.fit();
+        }, 50);
+    }
 }
 
 function updateCommandCardTitle(card) {
@@ -365,11 +368,9 @@ function updateCommandCardTitle(card) {
     const commandText = card.dataset.commandText || '';
 
     if (isExpanded) {
-        // Show status text when expanded
         titleElem.style.color = statusColor;
         updateHeaderTitleSmooth(titleElem, statusText, false);
     } else {
-        // Show command text when collapsed
         if (commandText) {
             titleElem.style.color = 'var(--text-sub)';
             updateHeaderTitleSmooth(titleElem, `$ ${commandText}`, true);
@@ -399,7 +400,6 @@ function createCommandSection(commands) {
         card.className = 'command-card expanded';
         card.dataset.command = commandCode;
 
-        // Set initial status data for title toggle
         card.dataset.commandText = commandCode;
         card.dataset.statusText = 'PENDING APPROVAL';
         card.dataset.statusColor = 'var(--color-pending)';
@@ -465,55 +465,195 @@ async function handleAllow(card) {
     const statusDot = card.querySelector('.status-dot');
     const pulseRing = card.querySelector('.pulse-ring');
     const commandStr = card.dataset.command || '';
+
     isProcessing = true; sendBtn.disabled = true;
     if (cursor) cursor.classList.add('hidden');
     if (btnRow) btnRow.remove();
     if (pulseRing) pulseRing.remove();
-    progressBar.classList.add('active');
+
+    // Remove old output and progress bar, prepare terminal container
+    outputArea.innerHTML = '';
+    const terminalContainer = document.createElement('div');
+    terminalContainer.className = 'terminal-container active';
+    outputArea.appendChild(terminalContainer);
+
     titleElem.style.color = 'var(--text-sub)';
     updateHeaderTitleSmooth(titleElem, 'EXECUTING…', false);
-    try {
-        const execResponse = await fetch('/api/execute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: commandStr }) });
-        if (!execResponse.ok) throw new Error(`Server returned HTTP ${execResponse.status}`);
-        const data = await execResponse.json();
-        progressBar.classList.remove('active');
+
+    // Create xterm terminal
+    const term = new Terminal({
+        cursorBlink: true,
+        cursorStyle: 'bar',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 13,
+        theme: {
+            background: '#121316',
+            foreground: '#ececec',
+            cursor: '#ffffff',
+            cursorAccent: '#121316',
+            selection: 'rgba(255,255,255,0.3)',
+            black: '#1a1b1e',
+            red: '#f87171',
+            green: '#4ade80',
+            yellow: '#fbbf24',
+            blue: '#60a5fa',
+            magenta: '#c084fc',
+            cyan: '#22d3ee',
+            white: '#e2e8f0',
+            brightBlack: '#475569',
+            brightRed: '#fca5a5',
+            brightGreen: '#86efac',
+            brightYellow: '#fde047',
+            brightBlue: '#93c5fd',
+            brightMagenta: '#d8b4fe',
+            brightCyan: '#67e8f9',
+            brightWhite: '#f8fafc',
+        },
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+
+    term.open(terminalContainer);
+    fitAddon.fit();
+
+    card._term = term;
+    card._fitAddon = fitAddon;
+    card._terminalContainer = terminalContainer;
+
+    // Connect to WebSocket
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/execute`;
+    const ws = new WebSocket(wsUrl);
+    card._ws = ws;
+
+    ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'exec', command: commandStr }));
+    };
+
+    let collectedOutput = '';
+    let exitCode = -1;
+
+    ws.onmessage = (event) => {
+        if (event.data instanceof Blob) {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const bytes = new Uint8Array(reader.result);
+                term.write(bytes);
+                collectedOutput += new TextDecoder().decode(bytes);
+            };
+            reader.readAsArrayBuffer(event.data);
+        } else {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'exit') {
+                exitCode = msg.code;
+                if (msg.output) collectedOutput = msg.output;
+                ws.close();
+            }
+        }
+    };
+
+    ws.onclose = () => {
+        // Process ended – keep terminal visible but readonly
+        term.options.disableStdin = true;
+        term.options.cursorBlink = false;
+        term.write('\x1b[?25l');  // hide cursor
+
+        // Switch to readonly layout
+        terminalContainer.classList.remove('active');
+        terminalContainer.classList.add('readonly');
+
+        // Compute actual content height from buffer lines (skip trailing empty lines)
+        const buffer = term.buffer.active;
+        let lastContentLine = 0;
+        for (let i = buffer.length - 1; i >= 0; i--) {
+            const lineText = buffer.getLine(i)?.translateToString().trim();
+            if (lineText && lineText !== '') {
+                lastContentLine = i + 1; // convert to count
+                break;
+            }
+        }
+        const contentLines = lastContentLine > 0 ? lastContentLine : term.rows;
+        const LINE_HEIGHT = 18; // approximate for 13px font
+        const contentHeight = contentLines * LINE_HEIGHT + 16; // 16px padding
+        terminalContainer.style.maxHeight = Math.min(contentHeight, 400) + 'px';
+        terminalContainer.style.height = 'auto';
+
+        delete card._ws;
+
         let activeColor, stateText;
-        if (data.exit_code === 0) { activeColor = 'var(--color-success)'; stateText = 'COMMAND EXECUTED'; }
-        else { activeColor = 'var(--color-error)'; stateText = 'COMMAND FAILED'; }
-        card.dataset.activeColor = activeColor; card.dataset.stateText = stateText;
+        if (exitCode === 0) {
+            activeColor = 'var(--color-success)';
+            stateText = 'COMMAND EXECUTED';
+        } else {
+            activeColor = 'var(--color-error)';
+            stateText = 'COMMAND FAILED';
+        }
+
+        card.dataset.activeColor = activeColor;
+        card.dataset.stateText = stateText;
         card.dataset.statusText = stateText;
         card.dataset.statusColor = activeColor;
-        statusDot.style.backgroundColor = activeColor; titleElem.style.color = activeColor;
-        let outputHTML = '<div class="command-output-block">';
-        if (data.stdout) outputHTML += `<pre style="color: ${activeColor};">${escapeHtml(data.stdout)}</pre>`;
-        if (data.stderr) outputHTML += `<pre style="color: var(--color-error);">${escapeHtml(data.stderr)}</pre>`;
-        if (!data.stdout && !data.stderr) outputHTML += `<pre style="color: var(--text-muted);">(no output)</pre>`;
-        outputHTML += '</div>';
-        outputArea.innerHTML += outputHTML;
+        statusDot.style.backgroundColor = activeColor;
+        titleElem.style.color = activeColor;
         card.classList.remove('expanded');
         updateCommandCardTitle(card);
-        try {
-            const fbResponse = await fetch('/api/ai-feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: commandStr, stdout: data.stdout, stderr: data.stderr, exit_code: data.exit_code }) });
-            if (fbResponse.ok) {
-                const fbData = await fbResponse.json();
-                if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
-            }
-        } catch (fbError) { console.error('AI feedback failed:', fbError); }
-    } catch (error) {
-        progressBar.classList.remove('active');
-        const errorColor = 'var(--color-error)';
-        const errorText = 'COMMAND FAILED';
-        card.dataset.statusText = errorText;
-        card.dataset.statusColor = errorColor;
-        statusDot.style.backgroundColor = errorColor; titleElem.style.color = errorColor;
-        outputArea.innerHTML += `<div class="command-output-block"><pre style="color: var(--color-error);">Error: ${escapeHtml(error.message)}</pre></div>`;
-        card.classList.remove('expanded');
-        updateCommandCardTitle(card);
-    } finally {
+
+        // AI feedback
+        (async () => {
+            try {
+                const fbResponse = await fetch('/api/ai-feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: commandStr,
+                        stdout: collectedOutput,
+                        stderr: '',
+                        exit_code: exitCode,
+                    }),
+                });
+                if (fbResponse.ok) {
+                    const fbData = await fbResponse.json();
+                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+                }
+            } catch (fbError) { console.error('AI feedback failed:', fbError); }
+        })();
+
         isProcessing = false;
         sendBtn.disabled = !promptInput.value.trim();
         processNextQueueTask();
-    }
+    };
+
+    ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        term.write('\r\n\x1b[31mConnection error\x1b[0m\r\n');
+        ws.close();
+    };
+
+    term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "stdin", data: data }));
+        }
+    });
+
+    term.onResize(({ cols, rows }) => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }
+    });
+
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+                if (card.classList.contains('expanded') && card._term) {
+                    setTimeout(() => card._fitAddon.fit(), 50);
+                }
+            }
+        });
+    });
+    observer.observe(card, { attributes: true, attributeFilter: ['class'] });
+    card._observer = observer;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -578,7 +718,7 @@ async function runPortalAnimation() {
         track.removeChild(currentItem);
         track.style.transition = 'none';
         track.style.transform = 'translateY(0)';
-        track.offsetHeight;   // force reflow
+        track.offsetHeight;
         track.style.transition = 'transform 0.5s cubic-bezier(0.2, 0, 0, 1)';
         currentItem = nextItem;
     }

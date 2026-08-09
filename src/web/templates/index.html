@@ -8,10 +8,47 @@
     <!-- Highlight.js – VS Code–style syntax highlighting -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- xterm.js – interactive terminal -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        /* Make xterm blend into command card */
+        .xterm-viewport {
+            background: var(--bg-card) !important;
+        }
+        .xterm-screen {
+            padding: 8px;
+        }
+        .xterm .xterm-rows {
+            font-family: var(--font-mono) !important;
+            font-size: 13px !important;
+        }
+        /* Hide xterm cursor when not focused */
+        .xterm-cursor-layer {
+            display: none;
+        }
+        .terminal-container:focus-within .xterm-cursor-layer {
+            display: block;
+        }
+        /* Terminal container fills space while running */
+        .terminal-container.active {
+            height: 100%;
+            min-height: 150px;
+        }
+        /* After command exits, show full output */
+        .terminal-container.readonly {
+            height: auto;
+            max-height: 400px;
+            overflow: hidden;  /* ← no container scrollbar; xterm handles its own */
+            min-height: 0;
+        }
+    </style>
 </head>
 <body>
     <div id="app">
