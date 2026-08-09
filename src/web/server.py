@@ -74,6 +74,7 @@ class AIFeedbackRequest(BaseModel):
 class AIFeedbackResponse(BaseModel):
     thinking: str
     answer: str
+    commands: list[dict] = []
 
 
 def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stderr: str) -> str:
@@ -85,6 +86,24 @@ def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stde
         f"stderr:\n{stderr}\n"
         f"[/SYSTEM_COMMAND_OUTPUT]"
     )
+
+
+def _extract_response(response: dict) -> tuple[str, str, list[dict]]:
+    """Extract thinking, answer, and commands from a provider response dict."""
+    thinking = response.get("thinking", "")
+    answer = response.get("answer", "")
+    commands = response.get("commands", [])
+
+    # If DOM extraction found nothing, fall back to regex on the answer.
+    if not commands:
+        commands = extract_commands(answer)
+
+    # Also scan the thinking text for commands we should filter out.
+    thinking_commands = extract_commands(thinking)
+    thinking_codes = {cmd["code"] for cmd in thinking_commands}
+    commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
+
+    return thinking, answer, commands
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -114,23 +133,7 @@ async def chat(request: ChatRequest):
         return provider.get_response()
 
     response = await loop.run_in_executor(None, send_and_get)
-
-    thinking = response.get("thinking", "")
-    answer = response.get("answer", "")
-    commands = response.get("commands", [])   # from DOM extraction
-
-    # ── Robust command detection ──
-    # If DOM extraction found nothing, fall back to regex on the answer.
-    if not commands:
-        commands = extract_commands(answer)
-
-    # Also scan the thinking text for commands we should filter out.
-    thinking_commands = extract_commands(thinking)
-    thinking_codes = {cmd["code"] for cmd in thinking_commands}
-    commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
-
-    # NOTE: We no longer strip ```command blocks from the answer.
-    # The frontend replaces them in-place with interactive command cards.
+    thinking, answer, commands = _extract_response(response)
 
     return ChatResponse(thinking=thinking, answer=answer, commands=commands)
 
@@ -178,7 +181,10 @@ async def ai_feedback(request: AIFeedbackRequest):
         return provider.get_response()
 
     ai_response = await loop.run_in_executor(None, send_wrapped_and_get)
+    thinking, answer, commands = _extract_response(ai_response)
+
     return AIFeedbackResponse(
-        thinking=ai_response.get("thinking", ""),
-        answer=ai_response.get("answer", ""),
+        thinking=thinking,
+        answer=answer,
+        commands=commands,
     )

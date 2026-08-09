@@ -18,6 +18,27 @@ let isPaused = false;
 let editingIndex = null;
 let taskQueue = [];
 
+/* ── Syntax Highlighting (VS Code style via highlight.js) ── */
+marked.setOptions({
+    highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+            try {
+                return hljs.highlight(code, { language: lang }).value;
+            } catch (e) {
+                // fall through to auto
+            }
+        }
+        if (lang !== 'command') {
+            try {
+                return hljs.highlightAuto(code).value;
+            } catch (e) {
+                // no-op
+            }
+        }
+        return code;
+    }
+});
+
 /* ═══════════════════════════════════════════════════════════════
    Input helpers
    ═══════════════════════════════════════════════════════════════ */
@@ -268,10 +289,20 @@ function addMessage(role, content, thinking = '', commands = []) {
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    
+
     if (role === 'assistant') {
         bubble.innerHTML = marked.parse(content);
-        
+
+        // Apply Highlight.js to any code blocks that were injected as raw HTML
+        bubble.querySelectorAll('pre code[class*="language-"]').forEach((codeEl) => {
+            // Don't touch command blocks (they become command cards)
+            if (codeEl.closest('.command-section')) return;
+            hljs.highlightElement(codeEl);
+            // Remove the hardcoded text colour from the parent <pre> so the theme's colours work
+            const pre = codeEl.closest('pre');
+            if (pre) pre.style.color = '';
+        });
+
         // INLINE COMMAND CARDS: Replace matching <pre> blocks dynamically
         if (commands && commands.length > 0) {
             let remainingCommands = [...commands];
@@ -309,7 +340,7 @@ function addMessage(role, content, thinking = '', commands = []) {
     } else {
         bubble.textContent = content;
     }
-    
+
     contentDiv.appendChild(bubble);
     row.appendChild(contentDiv);
     chatArea.appendChild(row);
@@ -320,11 +351,43 @@ function addMessage(role, content, thinking = '', commands = []) {
    Command cards
    ═══════════════════════════════════════════════════════════════ */
 
-function toggleCommandCard(headerElem) { const card = headerElem.closest('.command-card'); card.classList.toggle('expanded'); }
+function toggleCommandCard(headerElem) {
+    const card = headerElem.closest('.command-card');
+    card.classList.toggle('expanded');
+    updateCommandCardTitle(card);
+}
+
+function updateCommandCardTitle(card) {
+    const titleElem = card.querySelector('.command-header-title');
+    const isExpanded = card.classList.contains('expanded');
+    const statusText = card.dataset.statusText || 'PENDING APPROVAL';
+    const statusColor = card.dataset.statusColor || 'var(--color-pending)';
+    const commandText = card.dataset.commandText || '';
+
+    if (isExpanded) {
+        // Show status text when expanded
+        titleElem.style.color = statusColor;
+        updateHeaderTitleSmooth(titleElem, statusText, false);
+    } else {
+        // Show command text when collapsed
+        if (commandText) {
+            titleElem.style.color = 'var(--text-sub)';
+            updateHeaderTitleSmooth(titleElem, `$ ${commandText}`, true);
+        } else {
+            titleElem.style.color = statusColor;
+            updateHeaderTitleSmooth(titleElem, statusText, false);
+        }
+    }
+}
 
 function updateHeaderTitleSmooth(titleElem, newText, isCommand) {
     titleElem.classList.add('fading');
-    setTimeout(() => { titleElem.textContent = newText; if (isCommand) titleElem.classList.add('is-command'); else titleElem.classList.remove('is-command'); titleElem.classList.remove('fading'); }, 180);
+    setTimeout(() => {
+        titleElem.textContent = newText;
+        if (isCommand) titleElem.classList.add('is-command');
+        else titleElem.classList.remove('is-command');
+        titleElem.classList.remove('fading');
+    }, 180);
 }
 
 function createCommandSection(commands) {
@@ -335,10 +398,17 @@ function createCommandSection(commands) {
         const card = document.createElement('div');
         card.className = 'command-card expanded';
         card.dataset.command = commandCode;
+
+        // Set initial status data for title toggle
+        card.dataset.commandText = commandCode;
+        card.dataset.statusText = 'PENDING APPROVAL';
+        card.dataset.statusColor = 'var(--color-pending)';
+
         const header = document.createElement('div');
         header.className = 'command-header';
         header.onclick = () => toggleCommandCard(header);
         header.innerHTML = `<div class="command-header-left"><div class="status-dot-wrapper"><span class="status-dot" style="background-color: var(--color-pending);"></span><span class="pulse-ring"></span></div><span class="command-header-title" style="color: var(--color-pending);">PENDING APPROVAL</span></div><svg class="command-arrow" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
+
         const bodyWrapper = document.createElement('div');
         bodyWrapper.className = 'command-body-wrapper';
         const body = document.createElement('div');
@@ -378,10 +448,12 @@ function handleDecline(card) {
     const stateText = 'COMMAND DENIED';
     card.dataset.activeColor = activeColor;
     card.dataset.stateText = stateText;
+    card.dataset.statusText = stateText;
+    card.dataset.statusColor = activeColor;
     statusDot.style.backgroundColor = activeColor;
     titleElem.style.color = activeColor;
     card.classList.remove('expanded');
-    updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
+    updateCommandCardTitle(card);
 }
 
 async function handleAllow(card) {
@@ -409,6 +481,8 @@ async function handleAllow(card) {
         if (data.exit_code === 0) { activeColor = 'var(--color-success)'; stateText = 'COMMAND EXECUTED'; }
         else { activeColor = 'var(--color-error)'; stateText = 'COMMAND FAILED'; }
         card.dataset.activeColor = activeColor; card.dataset.stateText = stateText;
+        card.dataset.statusText = stateText;
+        card.dataset.statusColor = activeColor;
         statusDot.style.backgroundColor = activeColor; titleElem.style.color = activeColor;
         let outputHTML = '<div class="command-output-block">';
         if (data.stdout) outputHTML += `<pre style="color: ${activeColor};">${escapeHtml(data.stdout)}</pre>`;
@@ -417,21 +491,28 @@ async function handleAllow(card) {
         outputHTML += '</div>';
         outputArea.innerHTML += outputHTML;
         card.classList.remove('expanded');
-        updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
+        updateCommandCardTitle(card);
         try {
             const fbResponse = await fetch('/api/ai-feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: commandStr, stdout: data.stdout, stderr: data.stderr, exit_code: data.exit_code }) });
-            if (fbResponse.ok) { const fbData = await fbResponse.json(); if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking); }
+            if (fbResponse.ok) {
+                const fbData = await fbResponse.json();
+                if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+            }
         } catch (fbError) { console.error('AI feedback failed:', fbError); }
     } catch (error) {
         progressBar.classList.remove('active');
-        statusDot.style.backgroundColor = 'var(--color-error)'; titleElem.style.color = 'var(--color-error)';
+        const errorColor = 'var(--color-error)';
+        const errorText = 'COMMAND FAILED';
+        card.dataset.statusText = errorText;
+        card.dataset.statusColor = errorColor;
+        statusDot.style.backgroundColor = errorColor; titleElem.style.color = errorColor;
         outputArea.innerHTML += `<div class="command-output-block"><pre style="color: var(--color-error);">Error: ${escapeHtml(error.message)}</pre></div>`;
         card.classList.remove('expanded');
-        updateHeaderTitleSmooth(titleElem, `$ ${commandStr}`, true);
-    } finally { 
-        isProcessing = false; 
-        sendBtn.disabled = !promptInput.value.trim(); 
-        processNextQueueTask(); 
+        updateCommandCardTitle(card);
+    } finally {
+        isProcessing = false;
+        sendBtn.disabled = !promptInput.value.trim();
+        processNextQueueTask();
     }
 }
 

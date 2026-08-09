@@ -208,13 +208,13 @@ class DeepSeekProvider(AIProvider):
         markdown = re.sub(r'\n*Copy\n*', '\n', markdown)
         markdown = re.sub(r'\n*Download\n*', '\n', markdown)
 
-        # Customizable Colors Palette
-        header_bg = "#222428"      # Header Bar Background matching matte theme
-        header_text = "#f8f9fa"    # Language Title Text
-        btn_bg = "#2e3137"         # Copy Button Background
-        btn_text = "#f8f9fa"       # Copy Button Text
-        code_bg = "#4a4a4a"        # Main Code Background
-        code_text = "#e6e6e6"      # Code Text Color
+        # ── Blended palette (matches Catppuccin Mocha) ──
+        header_bg  = "#222428"   # --bg-header
+        header_text = "#ececec"  # --text-primary
+        btn_bg     = "#2e3137"   # muted hover
+        btn_text   = "#b4b4b4"   # --text-secondary
+        code_bg    = "#1a1b1e"   # --bg-card  (subtle inset)
+        code_text  = "#d4d4d4"   # readable
 
         # Replace placeholders safely using string replacement instead of regex
         # This prevents crashes or failure to replace if the code contains regex syntax like \n or \1
