@@ -45,12 +45,23 @@
     --color-error: #f87171;
     --color-terminal: #89b4fa;
     --color-denied: #ff9f43;
-    --btn-decline-bg: #222428;
-    --btn-decline-hover: #2e3137;
+
+    /* ── Redesigned Button Palette ── */
+    --btn-decline-bg: #2a171a;
+    --btn-decline-hover: #3d1c22;
     --btn-decline-text: #f87171;
-    --btn-allow-bg: #e2e8f0;
-    --btn-allow-hover: #ffffff;
-    --btn-allow-text: #0f1012;
+    --btn-decline-border: rgba(248, 113, 113, 0.25);
+
+    --btn-allow-bg: #11291d;
+    --btn-allow-hover: #173b2a;
+    --btn-allow-text: #4ade80;
+    --btn-allow-border: rgba(74, 222, 128, 0.25);
+
+    --btn-terminal-bg: #10233d;
+    --btn-terminal-hover: #183359;
+    --btn-terminal-text: #60a5fa;
+    --btn-terminal-border: rgba(96, 165, 250, 0.25);
+
     --font-ui: 'Inter', -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
 }
@@ -594,7 +605,7 @@ header {
     border-radius: 0 0 10px 10px;
 }
 
-/* Code Display */
+/* Code Display & Context Badges */
 .command-code {
     margin: 0;
     padding: 16px 18px;
@@ -609,14 +620,38 @@ header {
     border: none;
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 12px;
 }
 
-.command-code::before {
+.command-code-content {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+}
+
+.command-code-content::before {
     content: "$";
     color: var(--color-success);
     font-weight: 600;
     margin-right: 10px;
     user-select: none;
+}
+
+.cmd-tag {
+    font-family: var(--font-ui);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-sub);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .cursor {
@@ -633,7 +668,7 @@ header {
     display: none !important;
 }
 
-/* Action Buttons */
+/* Action Buttons — Matte Design */
 .command-btn-row {
     display: flex;
     gap: 10px;
@@ -644,8 +679,8 @@ header {
 
 .command-btn {
     flex: 1;
-    padding: 9px 14px;
-    border-radius: 6px;
+    padding: 10px 14px;
+    border-radius: 8px;
     font-family: var(--font-ui);
     font-size: 0.825rem;
     font-weight: 600;
@@ -655,12 +690,12 @@ header {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    border: none;
-    transition: background 0.15s ease, transform 0.05s ease;
+    border: 1px solid transparent;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .command-btn:active:not(:disabled) {
-    transform: scale(0.98);
+    transform: scale(0.97);
 }
 
 .command-btn:disabled {
@@ -672,20 +707,38 @@ header {
 .decline-btn {
     background: var(--btn-decline-bg);
     color: var(--btn-decline-text);
+    border-color: var(--btn-decline-border);
 }
 
 .decline-btn:hover:not(:disabled) {
     background: var(--btn-decline-hover);
+    border-color: rgba(248, 113, 113, 0.5);
+    box-shadow: 0 0 12px rgba(248, 113, 113, 0.15);
 }
 
 .allow-btn {
     background: var(--btn-allow-bg);
     color: var(--btn-allow-text);
+    border-color: var(--btn-allow-border);
 }
 
 .allow-btn:hover:not(:disabled) {
     background: var(--btn-allow-hover);
-    color: #000000;
+    border-color: rgba(74, 222, 128, 0.5);
+    box-shadow: 0 0 12px rgba(74, 222, 128, 0.15);
+}
+
+.terminal-btn {
+    background: var(--btn-terminal-bg);
+    color: var(--btn-terminal-text);
+    border-color: var(--btn-terminal-border);
+}
+
+.terminal-btn:hover:not(:disabled) {
+    background: var(--btn-terminal-hover);
+    border-color: rgba(96, 165, 250, 0.5);
+    box-shadow: 0 0 12px rgba(96, 165, 250, 0.2);
+    color: #ffffff;
 }
 
 /* Output Terminal — pure text, no badges */
@@ -737,7 +790,106 @@ header {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Queue Bubble — Blended Dark Theme
+   Terminal Modal (Pop‑up Terminal)
+   ══════════════════════════════════════════════════════════════ */
+
+.terminal-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(10, 11, 13, 0.75);
+    backdrop-filter: blur(8px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+    padding: 24px;
+}
+
+.terminal-modal-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.terminal-modal {
+    width: 100%;
+    max-width: 900px;
+    height: 520px;
+    background: var(--bg-canvas);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: scale(0.96);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.terminal-modal-overlay.active .terminal-modal {
+    transform: scale(1);
+}
+
+.modal-header {
+    height: 42px;
+    background: var(--bg-header);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    user-select: none;
+}
+
+.modal-dots {
+    display: flex;
+    gap: 8px;
+}
+
+.modal-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.modal-dot.close { background: #ff5f56; }
+.modal-dot.minimize { background: #ffbd2e; }
+.modal-dot.maximize { background: #27c93f; }
+
+.modal-title {
+    font-family: var(--font-mono);
+    font-size: 0.775rem;
+    color: var(--text-sub);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.modal-body {
+    flex: 1;
+    padding: 12px;
+    background: #0d0e11;
+    position: relative;
+}
+
+.modal-body .terminal-container {
+    height: 100%;
+    width: 100%;
+}
+
+/* xterm overrides inside modal */
+.modal-body .xterm-viewport {
+    background: transparent !important;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Queue Bubble — Blended Dark Theme (unchanged)
    ══════════════════════════════════════════════════════════════ */
 
 .input-wrapper {

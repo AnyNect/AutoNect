@@ -391,6 +391,15 @@ function updateHeaderTitleSmooth(titleElem, newText, isCommand) {
     }, 180);
 }
 
+// ── Context tag helper ──
+function getCommandContextTag(commandStr) {
+    if (commandStr.includes('pacman') || commandStr.includes('apt') || commandStr.includes('dnf')) return 'Package Manager';
+    if (commandStr.includes('systemctl') || commandStr.includes('service')) return 'System Control';
+    if (commandStr.includes('rm') || commandStr.includes('pkill')) return 'Destructive Action';
+    if (commandStr.length < 25) return 'Quick Execution';
+    return '';
+}
+
 function createCommandSection(commands) {
     const cmdSection = document.createElement('div');
     cmdSection.className = 'command-section';
@@ -413,19 +422,44 @@ function createCommandSection(commands) {
         bodyWrapper.className = 'command-body-wrapper';
         const body = document.createElement('div');
         body.className = 'command-body';
+
+        const tagText = getCommandContextTag(commandCode);
+        const tagHtml = tagText ? `<span class="cmd-tag">${tagText}</span>` : '';
+
         const pre = document.createElement('pre');
         pre.className = 'command-code';
-        pre.innerHTML = `<code class="code-text">${escapeHtml(commandCode)}</code><span class="cursor"></span>`;
+        pre.innerHTML = `
+            <div class="command-code-content">
+                <code class="code-text">${escapeHtml(commandCode)}</code>
+                <span class="cursor"></span>
+            </div>
+            ${tagHtml}`;
+
         const btnRow = document.createElement('div');
         btnRow.className = 'command-btn-row';
-        btnRow.innerHTML = `<button class="command-btn decline-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>Decline</button><button class="command-btn allow-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>Allow</button>`;
+        btnRow.innerHTML = `
+            <button class="command-btn decline-btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>Decline
+            </button>
+            <button class="command-btn allow-btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>Allow
+            </button>
+            <button class="command-btn terminal-btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="4 17 10 11 4 5"></polyline>
+                    <line x1="12" y1="19" x2="20" y2="19"></line>
+                </svg>Open Terminal
+            </button>`;
+
         const declineBtn = btnRow.querySelector('.decline-btn');
         const allowBtn = btnRow.querySelector('.allow-btn');
+        const terminalBtn = btnRow.querySelector('.terminal-btn');
         const outputArea = document.createElement('div');
         outputArea.className = 'command-output-area';
         outputArea.innerHTML = '<div class="progress-bar"></div>';
         declineBtn.onclick = (e) => { e.stopPropagation(); handleDecline(card); };
         allowBtn.onclick = (e) => { e.stopPropagation(); handleAllow(card); };
+        terminalBtn.onclick = (e) => { e.stopPropagation(); openTerminalModal(commandCode); };
         body.appendChild(pre); body.appendChild(btnRow); body.appendChild(outputArea);
         bodyWrapper.appendChild(body);
         card.appendChild(header); card.appendChild(bodyWrapper);
@@ -570,13 +604,13 @@ async function handleAllow(card) {
         for (let i = buffer.length - 1; i >= 0; i--) {
             const lineText = buffer.getLine(i)?.translateToString().trim();
             if (lineText && lineText !== '') {
-                lastContentLine = i + 1; // convert to count
+                lastContentLine = i + 1;
                 break;
             }
         }
         const contentLines = lastContentLine > 0 ? lastContentLine : term.rows;
-        const LINE_HEIGHT = 18; // approximate for 13px font
-        const contentHeight = contentLines * LINE_HEIGHT + 16; // 16px padding
+        const LINE_HEIGHT = 18;
+        const contentHeight = contentLines * LINE_HEIGHT + 16;
         terminalContainer.style.maxHeight = Math.min(contentHeight, 400) + 'px';
         terminalContainer.style.height = 'auto';
 
@@ -654,6 +688,52 @@ async function handleAllow(card) {
     });
     observer.observe(card, { attributes: true, attributeFilter: ['class'] });
     card._observer = observer;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Terminal Modal (Pop‑up)
+   ═══════════════════════════════════════════════════════════════ */
+
+let modalTerm = null;
+let modalFitAddon = null;
+
+function openTerminalModal(commandStr) {
+    const overlay = document.getElementById('terminal-modal');
+    const container = document.getElementById('modal-terminal-container');
+    container.innerHTML = '';
+
+    overlay.classList.add('active');
+
+    if (!modalTerm) {
+        modalTerm = new Terminal({
+            cursorBlink: true,
+            cursorStyle: 'block',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 13,
+            theme: {
+                background: '#0d0e11',
+                foreground: '#ececec',
+                cursor: '#3b82f6',
+                selection: 'rgba(59, 130, 246, 0.3)',
+            },
+        });
+        modalFitAddon = new FitAddon.FitAddon();
+        modalTerm.loadAddon(modalFitAddon);
+        modalTerm.loadAddon(new WebLinksAddon.WebLinksAddon());
+    }
+
+    modalTerm.open(container);
+    setTimeout(() => modalFitAddon.fit(), 100);
+
+    modalTerm.reset();
+    modalTerm.writeln('\x1b[1;34m[AutoNect Terminal Proxy]\x1b[0m Ready...');
+    modalTerm.writeln('\x1b[90mConnecting interactive session...\x1b[0m');
+    modalTerm.writeln('');
+    modalTerm.write(`user@autonect:~$ ${commandStr}`);
+}
+
+function closeTerminalModal() {
+    document.getElementById('terminal-modal').classList.remove('active');
 }
 
 /* ═══════════════════════════════════════════════════════════════
