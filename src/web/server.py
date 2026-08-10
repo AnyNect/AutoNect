@@ -17,8 +17,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
+from src.security import CommandGuard
 
 provider: DeepSeekProvider | None = None
+guard = CommandGuard()
 
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -85,7 +87,26 @@ def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stde
     )
 
 
-def _extract_response(response: dict) -> tuple[str, str, list[dict]]:
+def _annotate_commands_with_safety(commands: list[dict], session_id: str = "default") -> list[dict]:
+    """Add a 'safety' field to each command dict."""
+    annotated = []
+    for cmd in commands:
+        decision, info = guard.evaluate(cmd["code"], session_id)
+        # Map 'ask' to 'warn' for UI (brown "Unsure" tag), else keep as is
+        if decision == "ask":
+            safety = "warn"
+        else:
+            safety = decision  # "allow" or "deny"
+        cmd["safety"] = safety
+        if safety != "allow" and info:
+            cmd["safety_reason"] = info.get("reason", "")
+        else:
+            cmd["safety_reason"] = ""
+        annotated.append(cmd)
+    return annotated
+
+
+def _extract_response(response: dict, session_id: str = "default") -> tuple[str, str, list[dict]]:
     thinking = response.get("thinking", "")
     answer = response.get("answer", "")
     commands = response.get("commands", [])
@@ -96,6 +117,9 @@ def _extract_response(response: dict) -> tuple[str, str, list[dict]]:
     thinking_commands = extract_commands(thinking)
     thinking_codes = {cmd["code"] for cmd in thinking_commands}
     commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
+
+    # Annotate with safety
+    commands = _annotate_commands_with_safety(commands, session_id)
 
     return thinking, answer, commands
 
@@ -125,7 +149,7 @@ async def chat(request: ChatRequest):
         return provider.get_response()
 
     response = await loop.run_in_executor(None, send_and_get)
-    thinking, answer, commands = _extract_response(response)
+    thinking, answer, commands = _extract_response(response, request.session_id)
     return ChatResponse(thinking=thinking, answer=answer, commands=commands)
 
 
@@ -138,6 +162,7 @@ async def websocket_execute(websocket: WebSocket):
     try:
         cmd_data = json.loads(init_msg)
         command = cmd_data.get("command", "")
+        session_id = cmd_data.get("session_id", "default")
     except Exception:
         await websocket.close(code=4000, reason="Invalid JSON")
         return
@@ -146,22 +171,57 @@ async def websocket_execute(websocket: WebSocket):
         await websocket.close(code=4000, reason="No command provided")
         return
 
+    # ── Security Guard ──
+    decision, info = guard.evaluate(command, session_id)
+    if decision == "deny":
+        await websocket.send_text(json.dumps({
+            "type": "denied",
+            "reason": info.get("reason", "Blocked by policy")
+        }))
+        await websocket.close(code=4000, reason="Blocked")
+        return
+    elif decision == "ask":
+        # Ask user for approval
+        await websocket.send_text(json.dumps({
+            "type": "ask",
+            "command": command,
+            "reason": info.get("reason", ""),
+            "path": info.get("path", ""),
+            "session_id": session_id
+        }))
+        # Wait for user response
+        try:
+            approval = await websocket.receive_text()
+            data = json.loads(approval)
+            action = data.get("action")  # "allow_once", "allow_session", "deny"
+            path = data.get("path", "")
+            if action == "allow_once":
+                guard.approve_once(command, path)
+            elif action == "allow_session":
+                guard.approve_session(command, path)
+            else:
+                await websocket.send_text(json.dumps({"type": "denied", "reason": "User denied"}))
+                await websocket.close(code=4000, reason="Denied by user")
+                return
+        except Exception:
+            # fail closed
+            await websocket.send_text(json.dumps({"type": "denied", "reason": "Approval error"}))
+            await websocket.close(code=4000, reason="Approval error")
+            return
+
+    # If we get here, command is allowed (or approved)
     print(f"[WebSocket] Running: {command[:100]}...")
 
     # Fork PTY
     pid, master_fd = pty.fork()
     if pid == 0:
-        # Child: become session leader (creates new process group)
         try:
             os.setsid()
         except OSError:
             pass
-
-        # Execute command via shell
         os.execvp("/bin/sh", ["/bin/sh", "-c", command])
         os._exit(1)
 
-    # Parent: set master_fd to non-blocking (write safety)
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
@@ -169,7 +229,6 @@ async def websocket_execute(websocket: WebSocket):
     output_chunks = []
     exit_status = None
 
-    # Read from PTY using asyncio reader event
     reader_queue = asyncio.Queue()
 
     def pty_reader_callback():
@@ -178,13 +237,12 @@ async def websocket_execute(websocket: WebSocket):
             if data:
                 reader_queue.put_nowait(data)
             else:
-                reader_queue.put_nowait(None)  # EOF
+                reader_queue.put_nowait(None)
         except (OSError, BlockingIOError):
             pass
 
     loop.add_reader(master_fd, pty_reader_callback)
 
-    # Wait for process exit in a thread
     async def wait_for_exit():
         nonlocal exit_status
         _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
@@ -207,7 +265,6 @@ async def websocket_execute(websocket: WebSocket):
                     try:
                         obj = json.loads(msg["text"])
                     except json.JSONDecodeError:
-                        # Treat as raw stdin
                         try:
                             os.write(master_fd, msg["text"].encode())
                         except OSError:
@@ -246,12 +303,10 @@ async def websocket_execute(websocket: WebSocket):
     writer_task = asyncio.create_task(write_ws_to_pty())
     exit_task = asyncio.create_task(wait_for_exit())
 
-    # Wait for process to finish
     await exit_task
 
-    # Stop the reader and drain final bytes
     loop.remove_reader(master_fd)
-    await reader_queue.put(None)  # signal stop
+    await reader_queue.put(None)
 
     try:
         await asyncio.wait_for(reader_task, timeout=1)
@@ -260,10 +315,8 @@ async def websocket_execute(websocket: WebSocket):
 
     writer_task.cancel()
 
-    # Collect final output
     final_output = b"".join(output_chunks).decode(errors="replace")
 
-    # Send exit message
     await websocket.send_text(json.dumps({
         "type": "exit",
         "code": exit_status if exit_status is not None else -1,
@@ -272,7 +325,6 @@ async def websocket_execute(websocket: WebSocket):
 
     await websocket.close()
 
-    # Cleanup
     try:
         os.close(master_fd)
     except OSError:
@@ -296,7 +348,6 @@ async def ai_feedback(request: AIFeedbackRequest):
 
     ai_response = await loop.run_in_executor(None, send_wrapped_and_get)
     thinking, answer, commands = _extract_response(ai_response)
-
     return AIFeedbackResponse(
         thinking=thinking,
         answer=answer,

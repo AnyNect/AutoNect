@@ -391,13 +391,17 @@ function updateHeaderTitleSmooth(titleElem, newText, isCommand) {
     }, 180);
 }
 
-// ── Context tag helper ──
-function getCommandContextTag(commandStr) {
-    if (commandStr.includes('pacman') || commandStr.includes('apt') || commandStr.includes('dnf')) return 'Package Manager';
-    if (commandStr.includes('systemctl') || commandStr.includes('service')) return 'System Control';
-    if (commandStr.includes('rm') || commandStr.includes('pkill')) return 'Destructive Action';
-    if (commandStr.length < 25) return 'Quick Execution';
-    return '';
+// ── Safety tag (only three states) ──
+function getCommandSafetyTag(safety) {
+    switch (safety) {
+        case 'deny':
+            return { text: 'UNSAFE', class: 'cmd-tag-unsafe' };
+        case 'warn':
+            return { text: 'UNSURE', class: 'cmd-tag-unsure' };
+        case 'allow':
+        default:
+            return { text: 'SAFE', class: 'cmd-tag-safe' };
+    }
 }
 
 function createCommandSection(commands) {
@@ -423,8 +427,9 @@ function createCommandSection(commands) {
         const body = document.createElement('div');
         body.className = 'command-body';
 
-        const tagText = getCommandContextTag(commandCode);
-        const tagHtml = tagText ? `<span class="cmd-tag">${tagText}</span>` : '';
+        const safety = cmd.safety || 'allow';
+        const tag = getCommandSafetyTag(safety);
+        const tagHtml = `<span class="cmd-tag ${tag.class}">${tag.text}</span>`;
 
         const pre = document.createElement('pre');
         pre.className = 'command-code';
@@ -569,7 +574,7 @@ async function handleAllow(card) {
     let collectedOutput = '';
     let exitCode = -1;
 
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
         if (event.data instanceof Blob) {
             const reader = new FileReader();
             reader.onload = () => {
@@ -584,6 +589,17 @@ async function handleAllow(card) {
                 exitCode = msg.code;
                 if (msg.output) collectedOutput = msg.output;
                 ws.close();
+            } else if (msg.type === 'error') {
+                term.writeln('\r\n\x1b[31m' + msg.message + '\x1b[0m');
+                ws.close();
+            } else if (msg.type === 'warning') {
+                term.writeln('\r\n\x1b[33m⚠ ' + msg.message + '\x1b[0m');
+            } else if (msg.type === 'ask') {
+                // Show approval dialog and wait for user decision
+                const action = await showApprovalDialog(msg.command, msg.reason);
+                ws.send(JSON.stringify({ action: action, path: msg.path || '' }));
+                // The server will now either execute the command (and send more data)
+                // or send a "denied" message, which will be handled in the next onmessage call.
             }
         }
     };
@@ -736,6 +752,29 @@ function closeTerminalModal() {
     document.getElementById('terminal-modal').classList.remove('active');
 }
 
+function showApprovalDialog(command, reason) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'terminal-modal-overlay active';
+        overlay.innerHTML = `
+            <div class="terminal-modal" style="height:auto; max-width:500px;">
+                <div class="modal-header">
+                    <span class="modal-title">⚠️ Approval Required</span>
+                </div>
+                <div style="padding:20px; color:var(--text-primary);">
+                    <p style="margin-bottom:10px;"><strong>Command:</strong> <code style="background:#00000030; padding:2px 6px; border-radius:4px;">${escapeHtml(command)}</code></p>
+                    <p style="margin-bottom:20px; color:var(--text-sub);">${escapeHtml(reason)}</p>
+                    <div style="display:flex; gap:8px; justify-content:flex-end;">
+                        <button class="command-btn decline-btn" onclick="this.closest('.terminal-modal-overlay').remove(); resolve('deny')">Deny</button>
+                        <button class="command-btn allow-btn" onclick="this.closest('.terminal-modal-overlay').remove(); resolve('allow_once')">Allow Once</button>
+                        <button class="command-btn terminal-btn" onclick="this.closest('.terminal-modal-overlay').remove(); resolve('allow_session')">Allow Session</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+    });
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Loading portal
    ═══════════════════════════════════════════════════════════════ */
@@ -757,8 +796,7 @@ function showLoading() {
 async function runPortalAnimation() {
     const states = [
         { icon: '🧠', label: 'Thinking', spin: false },
-        { icon: '🔍', label: 'Searching', spin: false },
-        { icon: '✏️', label: 'Writing', spin: false },
+        { icon: '⏳', label: 'Processing', spin: true },
     ];
     let index = 0;
     const track = document.getElementById('portal-track');

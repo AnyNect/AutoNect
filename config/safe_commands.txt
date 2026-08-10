@@ -1,0 +1,54 @@
+ls
+cat
+head
+tail
+grep
+find
+echo
+printf
+cd
+pwd
+mkdir
+touch
+cp
+mv
+ln
+chmod
+chown
+stat
+file
+diff
+patch
+git status
+git diff
+git log
+git add
+git commit
+git pull
+git fetch
+git branch
+git checkout
+git merge
+git stash
+git tag
+npm install
+npm start
+npm run
+pip install
+python
+python3
+python3.12
+ipython
+jupyter
+conda
+docker ps
+docker images
+docker logs
+kubectl get
+kubectl describe
+systemctl status
+journalctl
+htop
+top
+ps aux
+kill

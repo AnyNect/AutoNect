@@ -1,0 +1,28 @@
+{
+  "enabled": true,
+  "default_decision": "ask",
+  "fail_closed": true,
+  "workspace_root": null,
+  "protected_paths": [
+    ".env",
+    ".git/",
+    ".ssh/",
+    ".aws/",
+    ".gnupg/",
+    ".config/",
+    ".local/",
+    ".cache/",
+    "secrets/",
+    "*.pem",
+    "*.key"
+  ],
+  "allowed_paths": [
+    "*.log",
+    "*.tmp",
+    "cache/",
+    "node_modules/"
+  ],
+  "block_shell_composition": true,
+  "block_git_force_push": true,
+  "block_obfuscation": true
+}

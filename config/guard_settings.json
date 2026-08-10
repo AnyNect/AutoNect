@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "default_action": "warn",
+  "severity_threshold": "medium",
+  "allowlist_commands": [],
+  "denylist_commands": []
+}
