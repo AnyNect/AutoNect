@@ -707,50 +707,242 @@ async function handleAllow(card) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Terminal Modal (Pop‑up)
+   Terminal Modal (Pop‑up) – with reliable close using window keydown capture
    ═══════════════════════════════════════════════════════════════ */
 
-let modalTerm = null;
-let modalFitAddon = null;
+// ── Global references for modal terminal ──
+let _modalTerm = null;
+let _modalWs = null;
+let _modalCommandExited = false;
+let _modalCloseListener = null; // window keydown listener
 
 function openTerminalModal(commandStr) {
     const overlay = document.getElementById('terminal-modal');
     const container = document.getElementById('modal-terminal-container');
     container.innerHTML = '';
 
+    // Close any previous modal websocket/terminal
+    closeModalResources();
+
     overlay.classList.add('active');
 
-    if (!modalTerm) {
-        modalTerm = new Terminal({
-            cursorBlink: true,
-            cursorStyle: 'block',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 13,
-            theme: {
-                background: '#0d0e11',
-                foreground: '#ececec',
-                cursor: '#3b82f6',
-                selection: 'rgba(59, 130, 246, 0.3)',
-            },
-        });
-        modalFitAddon = new FitAddon.FitAddon();
-        modalTerm.loadAddon(modalFitAddon);
-        modalTerm.loadAddon(new WebLinksAddon.WebLinksAddon());
+    // Create new terminal instance
+    const term = new Terminal({
+        cursorBlink: true,
+        cursorStyle: 'block',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 13,
+        theme: {
+            background: '#0d0e11',
+            foreground: '#ececec',
+            cursor: '#3b82f6',
+            selection: 'rgba(59, 130, 246, 0.3)',
+        },
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    term.open(container);
+    setTimeout(() => fitAddon.fit(), 100);
+
+    // Store globally for cleanup
+    _modalTerm = term;
+    _modalCommandExited = false;
+
+    // ── Write the full Konsole‑style header ──
+    const header = [
+        '',
+        '\x1b[38;2;0;212;255m',
+        '  █████╗ ██╗  ██╗████████╗██╗  ██╗███╗   ██╗███████╗██████╗████████╗',
+        ' ██╔══██╗██║  ██║╚══██╔══╝██║  ██║████╗  ██║██╔════╝██╔════╝╚══██╔══╝',
+        ' ███████║██║  ██║   ██║   ███████║██╔██╗ ██║█████╗  ██║        ██║   ',
+        ' ██╔══██║██║  ██║   ██║   ██╔══██║██║╚██╗██║██╔══╝  ██║        ██║   ',
+        ' ██║  ██║╚█████╔╝   ██║   ██║  ██║██║ ╚████║███████╗╚██████╗   ██║   ',
+        ' ╚═╝  ╚═╝ ╚════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝ ╚═════╝   ╚═╝   ',
+        '\x1b[0m',
+        '',
+        '\x1b[38;2;70;130;180m─────────────────────────────────────────────────────────────\x1b[0m',
+        `\x1b[38;2;0;212;255m  ◈ COMMAND  \x1b[38;2;255;255;255m:: \x1b[1;37m${commandStr}\x1b[0m`,
+        '\x1b[38;2;70;130;180m─────────────────────────────────────────────────────────────\x1b[0m',
+        '',
+    ];
+    header.forEach(line => term.writeln(line));
+
+    term.focus();
+
+    // ── Connect WebSocket ──
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/execute`;
+    const ws = new WebSocket(wsUrl);
+    _modalWs = ws;
+
+    let collectedOutput = '';
+    let exitCode = -1;
+    let startTime = Date.now();
+
+    ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'exec', command: commandStr }));
+    };
+
+    ws.onmessage = async (event) => {
+        if (event.data instanceof Blob) {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const bytes = new Uint8Array(reader.result);
+                term.write(bytes);
+                collectedOutput += new TextDecoder().decode(bytes);
+            };
+            reader.readAsArrayBuffer(event.data);
+        } else {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'exit') {
+                exitCode = msg.code;
+                if (msg.output) collectedOutput = msg.output;
+                ws.close();
+                _modalCommandExited = true;
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+                term.writeln('');
+                term.writeln('\x1b[38;2;70;130;180m─────────────────────────────────────────────────────────────\x1b[0m');
+                if (exitCode === 0) {
+                    term.writeln(`\x1b[48;2;0;119;255m\x1b[38;2;255;255;255m\x1b[1m  ✓ EXECUTION SUCCESSFUL  \x1b[0m \x1b[38;2;0;212;255m(Exit Code: 0 | Time: ${elapsed}s)\x1b[0m`);
+                } else {
+                    term.writeln(`\x1b[48;2;220;53;69m\x1b[38;2;255;255;255m\x1b[1m  ✗ EXECUTION FAILED  \x1b[0m \x1b[38;2;255;255;255m(Exit Code: ${exitCode} | Time: ${elapsed}s)\x1b[0m`);
+                }
+                term.writeln('');
+
+                term.writeln('\x1b[38;2;0;212;255mSending output to AI for feedback...\x1b[0m');
+                try {
+                    const fbResponse = await fetch('/api/ai-feedback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            command: commandStr,
+                            stdout: collectedOutput,
+                            stderr: '',
+                            exit_code: exitCode,
+                        }),
+                    });
+                    if (fbResponse.ok) {
+                        const fbData = await fbResponse.json();
+                        term.writeln('\x1b[32m✓ AI feedback received.\x1b[0m');
+                        if (fbData.answer) {
+                            addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+                        }
+                    } else {
+                        term.writeln('\x1b[31m✗ AI feedback failed (server error).\x1b[0m');
+                    }
+                } catch (fbError) {
+                    term.writeln('\x1b[31m✗ AI feedback error: ' + fbError.message + '\x1b[0m');
+                }
+
+                term.writeln('');
+                term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
+                term.focus();
+
+                // Add global keydown listener with capture to close on any key
+                if (!_modalCloseListener) {
+                    _modalCloseListener = (e) => {
+                        if (overlay.classList.contains('active')) {
+                            closeTerminalModal();
+                        }
+                    };
+                    window.addEventListener('keydown', _modalCloseListener, true);
+                }
+
+            } else if (msg.type === 'ask') {
+                const action = await showApprovalDialog(msg.command, msg.reason);
+                ws.send(JSON.stringify({ action: action, path: msg.path || '' }));
+            } else if (msg.type === 'denied') {
+                term.writeln('\x1b[31mCommand denied: ' + (msg.reason || '') + '\x1b[0m');
+                ws.close();
+                _modalCommandExited = true;
+                term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
+                term.focus();
+                if (!_modalCloseListener) {
+                    _modalCloseListener = (e) => {
+                        if (overlay.classList.contains('active')) {
+                            closeTerminalModal();
+                        }
+                    };
+                    window.addEventListener('keydown', _modalCloseListener, true);
+                }
+            } else if (msg.type === 'error') {
+                term.writeln('\x1b[31mError: ' + msg.message + '\x1b[0m');
+                ws.close();
+                _modalCommandExited = true;
+                term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
+                term.focus();
+                if (!_modalCloseListener) {
+                    _modalCloseListener = (e) => {
+                        if (overlay.classList.contains('active')) {
+                            closeTerminalModal();
+                        }
+                    };
+                    window.addEventListener('keydown', _modalCloseListener, true);
+                }
+            }
+        }
+    };
+
+    ws.onerror = (err) => {
+        term.writeln('\x1b[31mWebSocket error\x1b[0m');
+        ws.close();
+        _modalCommandExited = true;
+        term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
+        term.focus();
+        if (!_modalCloseListener) {
+            _modalCloseListener = (e) => {
+                if (overlay.classList.contains('active')) {
+                    closeTerminalModal();
+                }
+            };
+            window.addEventListener('keydown', _modalCloseListener, true);
+        }
+    };
+
+    ws.onclose = () => {
+        if (!_modalCommandExited) {
+            term.writeln('\x1b[31mConnection closed unexpectedly\x1b[0m');
+            _modalCommandExited = true;
+            term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
+            term.focus();
+            if (!_modalCloseListener) {
+                _modalCloseListener = (e) => {
+                    if (overlay.classList.contains('active')) {
+                        closeTerminalModal();
+                    }
+                };
+                window.addEventListener('keydown', _modalCloseListener, true);
+            }
+        }
+    };
+}
+
+function closeModalResources() {
+    if (_modalWs && _modalWs.readyState === WebSocket.OPEN) {
+        _modalWs.close();
     }
-
-    modalTerm.open(container);
-    setTimeout(() => modalFitAddon.fit(), 100);
-
-    modalTerm.reset();
-    modalTerm.writeln('\x1b[1;34m[AutoNect Terminal Proxy]\x1b[0m Ready...');
-    modalTerm.writeln('\x1b[90mConnecting interactive session...\x1b[0m');
-    modalTerm.writeln('');
-    modalTerm.write(`user@autonect:~$ ${commandStr}`);
+    _modalWs = null;
+    if (_modalCloseListener) {
+        window.removeEventListener('keydown', _modalCloseListener, true);
+        _modalCloseListener = null;
+    }
+    if (_modalTerm) {
+        try { _modalTerm.dispose(); } catch (e) {}
+        _modalTerm = null;
+    }
+    _modalCommandExited = false;
 }
 
 function closeTerminalModal() {
+    closeModalResources();
     document.getElementById('terminal-modal').classList.remove('active');
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Approval Dialog (used both in command cards and modal)
+   ═══════════════════════════════════════════════════════════════ */
 
 function showApprovalDialog(command, reason) {
     return new Promise((resolve) => {
