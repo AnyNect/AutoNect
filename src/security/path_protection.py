@@ -80,6 +80,6 @@ class PathProtector:
                     return {
                         "path": cleaned,
                         "pattern": pattern,
-                        "reason": f"Access to protected path: {cleaned}"
+                        "reason": f"BAccess to protected path: {cleaned}"
                     }
         return None

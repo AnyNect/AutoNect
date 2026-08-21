@@ -6,8 +6,10 @@ def decode_printf_hex(command: str) -> str | None:
     if match:
         hex_str = match.group(2)
         try:
-            hex_pairs = re.findall(r'\\x([0-9a-fA-F]{2})', hex_str)
-            return bytes(int(h, 16) for h in hex_pairs).decode('utf-8', errors='replace')
+            def replace_hex(m):
+                return chr(int(m.group(1), 16))
+            decoded = re.sub(r'\\x([0-9a-fA-F]{2})', replace_hex, hex_str)
+            return decoded
         except Exception:
             return None
     return None
@@ -17,8 +19,10 @@ def decode_printf_octal(command: str) -> str | None:
     if match:
         octal_str = match.group(2)
         try:
-            octal_pairs = re.findall(r'\\([0-7]{3})', octal_str)
-            return bytes(int(o, 8) for o in octal_pairs).decode('utf-8', errors='replace')
+            def replace_octal(m):
+                return chr(int(m.group(1), 8))
+            decoded = re.sub(r'\\([0-7]{3})', replace_octal, octal_str)
+            return decoded
         except Exception:
             return None
     return None
@@ -112,7 +116,8 @@ def decode_echo_escapes(command: str) -> str | None:
         try:
             def replace_octal(m):
                 return chr(int(m.group(1), 8))
-            decoded = re.sub(r'\\([0-7]{3})', replace_octal, escaped_str)
+            # Handle 1-3 digit octal sequences (\040 or \40)
+            decoded = re.sub(r'\\([0-7]{1,3})', replace_octal, escaped_str)
             def replace_hex(m):
                 return chr(int(m.group(1), 16))
             decoded = re.sub(r'\\x([0-9a-fA-F]{2})', replace_hex, decoded)
