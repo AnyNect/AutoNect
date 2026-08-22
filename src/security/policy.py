@@ -38,8 +38,6 @@ class SecurityPolicy:
             })
 
     def _extract_and_evaluate_substitutions(self, cmd: str) -> Tuple[Decision, Optional[Dict]]:
-        # FIX: Now evaluates substitutions inside echo/printf arguments too.
-        # Extract $() and backtick substitutions from ANY context, not just standalone.
         pattern = r'\$\(([^)]+)\)|`([^`]+)`'
         matches = re.findall(pattern, cmd)
         for match in matches:
@@ -54,7 +52,6 @@ class SecurityPolicy:
                             "decoded_decision": dec_decision.value,
                             "decoded_info": dec_info,
                         }
-                # Also evaluate the inner as a command (if it's dangerous, deny)
                 inner_decision, inner_info = self.evaluate(inner, self.session.session_id, skip_allowlist=True, depth=0)
                 if inner_decision in (Decision.DENY, Decision.ASK):
                     return inner_decision, inner_info
@@ -70,11 +67,9 @@ class SecurityPolicy:
         return False, None
 
     def _check_script_languages(self, cmd: str) -> Tuple[Decision, Optional[Dict]]:
-        # Python
         python_match = re.search(r'python3?\s+-c\s+(["\'])(.*?)(?<!\\)\1', cmd, re.DOTALL)
         if python_match:
             code = python_match.group(2)
-            # Catch exec with base64 or fromhex (obfuscation)
             if re.search(r'(?:exec|eval)\s*\(', code) and re.search(r'base64|fromhex', code):
                 return Decision.DENY, {"reason": "Python exec with obfuscated payload"}
             dangerous = find_dangerous_calls(code)
@@ -85,7 +80,6 @@ class SecurityPolicy:
                     return Decision.ALLOW, {"dry_run": True, "reason": "Python dry-run echo"}
                 return Decision.DENY, {"reason": "Python script executes dangerous shell command"}
 
-        # Ruby
         ruby_match = re.search(r'ruby\s+-e\s+(["\'])(.*?)(?<!\\)\1', cmd, re.DOTALL)
         if ruby_match:
             code = ruby_match.group(2)
@@ -97,7 +91,6 @@ class SecurityPolicy:
             if re.search(r'`.*rm\s+-rf.*`', code):
                 return Decision.DENY, {"reason": "Ruby backtick with dangerous command"}
 
-        # Node
         node_match = re.search(r'node\s+-e\s+(["\'])(.*?)(?<!\\)\1', cmd, re.DOTALL)
         if node_match:
             code = node_match.group(2)
@@ -110,7 +103,6 @@ class SecurityPolicy:
                 else:
                     return Decision.DENY, {"reason": "Node.js script executes dangerous shell command"}
 
-        # PHP
         php_match = re.search(r'php\s+-r\s+(["\'])(.*?)(?<!\\)\1', cmd, re.DOTALL)
         if php_match:
             code = php_match.group(2)
@@ -120,14 +112,12 @@ class SecurityPolicy:
                 else:
                     return Decision.DENY, {"reason": "PHP script executes dangerous shell command"}
 
-        # AWK
         if re.search(r'awk\s+.*system\s*\(', cmd):
             if re.search(r'system\s*\(\s*["\']echo\s*["\']?\s*[+,]', cmd) or re.search(r'system\s*\(\s*["\']echo\s+', cmd):
                 return Decision.ALLOW, {"dry_run": True, "reason": "AWK dry-run echo"}
             else:
                 return Decision.DENY, {"reason": "AWK executes dangerous shell command"}
 
-        # FIX: Perl - check for system() calls similar to Ruby
         perl_match = re.search(r'perl\s+-e\s+(["\'])(.*?)(?<!\\)\1', cmd, re.DOTALL)
         if perl_match:
             code = perl_match.group(2)
@@ -160,6 +150,8 @@ class SecurityPolicy:
             return True
         if re.search(r'(?:curl|wget)\s+.*\|\s*(?:sh|bash)\s+-c\s+[\'\"]echo', raw_cmd):
             return True
+        if re.search(r'base64\s+-d\s*\|\s*(?:sh|bash)\s+-c\s+[\'"].*echo\s+["\'].*Dry\s+run', raw_cmd, re.IGNORECASE):
+            return True
         return False
 
     def _has_variable_concatenation_danger(self, cmd: str) -> bool:
@@ -173,25 +165,12 @@ class SecurityPolicy:
         return False
 
     def _has_dangerous_variable_usage(self, cmd: str) -> bool:
-        """Detect dangerous variable usage: assignments containing rm -rf used with eval/$/sh -c, or multiple vars forming rm -rf.
-
-        FIX: Now also handles eval "$var" with additional args, A="rm -rf"; B="$HOME/.*"; eval "$A $B",
-        and single-quoted assignments like x='rm -rf ...'; eval "$x".
-        Also handles unquoted split assignments: X=rm; Y=-rf; $X $Y ~/.*
-        """
         stripped = self.shell_detector.strip_quoted_text(cmd)
-
-        # ── Handle both quoted AND unquoted assignments ──
-        # Quoted: A="rm -rf", B='-rf'
         quoted_assigns = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(["\x27])(.*?)(?:\2)', cmd)
-        # Unquoted: X=rm, Y=-rf
         unquoted_assigns = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\s*=(?!\s*["\x27])(\S+)', cmd)
-
-        # Merge: (var, value) for all assignments
         all_assigns = [(v, val) for v, _, val in quoted_assigns]
         all_assigns += [(v, val) for v, val in unquoted_assigns]
 
-        # Check for assignments with rm -rf used as command or with eval/sh -c
         for var, value in all_assigns:
             if 'rm -rf' in value or 'rm ' in value:
                 if re.search(rf'\$({var}|\{{{var}\}})', cmd):
@@ -202,8 +181,6 @@ class SecurityPolicy:
                     if re.search(rf'\$({var}|\{{{var}\}})$', cmd):
                         return True
 
-        # Detect split variables: e.g., cmd="rm"; args="-rf ~/.* ~/*"; $cmd $args
-        # Or unquoted: X=rm; Y=-rf; $X $Y ~/.* ~/*
         dangerous_vars = []
         for var, value in all_assigns:
             if 'rm' in value or '-rf' in value or '~' in value or '$HOME' in value:
@@ -219,18 +196,11 @@ class SecurityPolicy:
         return False
 
     def _check_raw_rm_patterns(self, raw_cmd: str) -> Tuple[Decision, Optional[Dict]]:
-        """Check raw (pre-normalize) command for rm patterns that survive quote stripping.
-
-        Catches: long flags (--force --recursive, --recursive ... --force),
-        -R flag, env -i/-u wrappers, here-strings, and quoted partial names.
-        """
-        # Octal echo -e piped to shell (without hex)
         if re.search(r'echo\s+-e\s+".*\\[0-7]{3}', raw_cmd) and \
            re.search(r'\|\s*(?:sh|bash)\b', raw_cmd):
             if not re.search(r'\|\s*(?:sh|bash)\s+-n\b', raw_cmd):
                 return Decision.DENY, {"reason": "Octal escaped command piped to shell"}
 
-        # Here-strings: cmd <<< 'dangerous command'
         herestring_m = re.search(r'\b(?:sh|bash|zsh)\s*<<<', raw_cmd)
         if herestring_m:
             rest = raw_cmd[herestring_m.end():].strip()
@@ -244,16 +214,13 @@ class SecurityPolicy:
                re.search(r'~', rest):
                 return Decision.DENY, {"reason": "Dangerous here-string with rm long flags ~"}
 
-        # cat <<< 'rm -rf ...' | sh  (here-string piped to shell)
         if re.search(r'<<<', raw_cmd) and re.search(r'\|\s*(?:sh|bash)\b', raw_cmd):
             return Decision.DENY, {"reason": "Here-string piped to shell"}
 
-        # env -i / env -u with shell -c wrapping dangerous command
         if re.search(r'env\s+(?:-i|-u)\s+\S+.*(?:bash|sh|zsh)\s+-c', raw_cmd, re.DOTALL):
             if re.search(r'rm\s+-[rfRF]+', raw_cmd) or re.search(r'rm\s+--(?:recursive|force)', raw_cmd):
                 return Decision.DENY, {"reason": "env wrapper with dangerous rm in shell -c"}
 
-        # Process substitution: cmd <(printf/echo 'rm -rf ...')
         ps_m = re.search(r'(\S+)\s+<\(\s*(.*)\)', raw_cmd, re.DOTALL)
         if ps_m:
             cmd_name = ps_m.group(1)
@@ -271,7 +238,6 @@ class SecurityPolicy:
                re.match(r'python3?$', cmd_name):
                 return Decision.DENY, {"reason": "Remote code via process substitution into interpreter"}
 
-        # rm with long flags (--force, --recursive, --force --recursive, etc.)
         if re.search(r'rm\s+--(?:force|recursive)\b', raw_cmd, re.IGNORECASE):
             has_force = bool(re.search(r'--force\b', raw_cmd, re.IGNORECASE))
             has_recursive = bool(re.search(r'--recursive\b', raw_cmd, re.IGNORECASE))
@@ -287,20 +253,17 @@ class SecurityPolicy:
             if has_recursive and has_force and (has_home or has_home_var):
                 return Decision.DENY, {"reason": "rm --recursive ... --force targeting home"}
 
-        # rm -R (uppercase R) targeting home
         if re.search(r'rm\s+-R\b', raw_cmd, re.IGNORECASE) and re.search(r'~', raw_cmd):
             if re.search(r'-[fF]\b', raw_cmd):
                 return Decision.DENY, {"reason": "rm -R -f targeting home"}
             return Decision.DENY, {"reason": "rm -R recursive targeting home"}
 
-        # Backslash-escaped rm: rm\ -rf\ ~/.*
         if re.search(r'\\ ', raw_cmd):
             unescaped = remove_backslash_spaces(raw_cmd)
             if unescaped != raw_cmd and re.match(r'^rm\b', unescaped):
                 if re.search(r'-[rfRF]+', unescaped, re.IGNORECASE) and re.search(r'~', unescaped):
                     return Decision.DENY, {"reason": "Backslash-escaped rm -rf targeting home"}
 
-        # Quoted partial names: "rm" "-rf", r"m" -r"f", etc.
         _has_quote_frag = False
         if re.search(r'\b[rR]["\']\S*["\']\s', raw_cmd):
             _has_quote_frag = True
@@ -319,10 +282,16 @@ class SecurityPolicy:
         return Decision.ALLOW, None
 
     def _global_danger_checks(self, cmd: str, stripped: str, original: str) -> Tuple[Decision, Optional[Dict]]:
+        # Explicit base64/xxd decode to shell pipelines (dangerous)
+        if re.search(r'(?:echo|printf)\s+.*\|\s*base64\s+-d\s*\|\s*(?:sh|bash|zsh)\b', original, re.DOTALL):
+            return Decision.DENY, {"reason": "Base64 decoded command piped to shell"}
+        if re.search(r'(?:echo|printf)\s+.*\|\s*xxd\s+-(?:r\s+-p|p\s+-r)\s*\|\s*(?:sh|bash|zsh)\b', original, re.DOTALL):
+            return Decision.DENY, {"reason": "XXD decoded command piped to shell"}
+
+        # Existing checks
         if re.search(r'find\s+.*-delete', stripped, re.DOTALL):
             return Decision.DENY, {"reason": "Destructive find -delete"}
 
-        # Detect echo/printf piped to shell, but ignore sh -n / bash -n
         if re.search(r'(?:echo|printf)\s+.*\|\s*(?:sh|bash)\b', original, re.DOTALL):
             if not re.search(r'\|\s*(?:sh|bash)\s+-n\b', original, re.DOTALL):
                 if not re.search(r'\|\s*(?:sh|bash)\s+-c\s+.*echo', original, re.DOTALL):
@@ -332,25 +301,26 @@ class SecurityPolicy:
             if not re.search(r'subprocess\.run\s*\(\s*\[\s*[\'\"]echo[\'\"]', original):
                 return Decision.DENY, {"reason": "Python dangerous call"}
 
-        # Detect writing dangerous script to /tmp and executing
         write_pattern = r'(?:echo|printf|cat)\s+.*rm\s+-rf.*>\s*/tmp/[^\s;]+'
         exec_pattern = r'(?:sh|bash|source|\.)\s+/tmp/[^\s;]+'
         if re.search(write_pattern, original, re.DOTALL) and re.search(exec_pattern, original, re.DOTALL):
             return Decision.DENY, {"reason": "Writing dangerous script to /tmp and executing"}
 
-        # Detect base64/xxd decode to file, then execute
         write_decode_pattern = r'(?:echo|printf|cat)\s+.*\|\s*(?:base64|xxd)\s+-(?:d|r|p)\s*>\s*/tmp/[^\s;]+'
         if re.search(write_decode_pattern, original, re.DOTALL) and re.search(exec_pattern, original, re.DOTALL):
             return Decision.DENY, {"reason": "Decode to file then execute"}
 
-        # Detect alias definition followed by execution of the alias
+        # Enhanced: encoded printf/echo writes to /tmp then execute via sh/bash/source/dot
+        if re.search(r'(?:printf|echo\s+-e)\s+.*\\(?:x[0-9a-fA-F]{2}|[0-7]{3}).*\s*[>][>]?\s*/tmp/[^\s;]+', original, re.DOTALL) and \
+           re.search(r'(?:sh|bash|zsh|source|\.)\s+/tmp/[^\s;]+', original, re.DOTALL):
+            return Decision.DENY, {"reason": "Encoded dangerous script written to /tmp and executed"}
+
         alias_def = re.search(r'alias\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["\'].*rm\s+-rf.*["\']', original)
         if alias_def:
             alias_name = alias_def.group(1)
             if re.search(rf'(?<![A-Za-z0-9_]){re.escape(alias_name)}(?![A-Za-z0-9_])', original):
                 return Decision.DENY, {"reason": "Alias with rm -rf and execution"}
 
-        # rm with quoted "$HOME" paths
         _rm_flags = re.search(r'rm\s+-[rfRF]+', cmd, re.IGNORECASE)
         _has_qhome = re.search(r'"\$HOME', cmd)
         if _rm_flags and _has_qhome and not re.match(r'^(?:echo|printf)\s+[\'\"]', cmd):
@@ -364,7 +334,6 @@ class SecurityPolicy:
         if re.search(r'rm\s+-[rfRF]+', cmd, re.IGNORECASE) and re.search(r'"\$\(printf', cmd):
             return Decision.DENY, {"reason": "rm -rf with printf subshell path"}
 
-        # Truncation targeting "$HOME/..." (quoted)
         if re.search(r'>\s*"\$HOME/', cmd):
             return Decision.DENY, {"reason": "Truncating $HOME file"}
         if re.search(r':\s*>\s*"\$HOME/', cmd):
@@ -378,7 +347,6 @@ class SecurityPolicy:
         if re.search(r'echo\s+-n?\s*>\s*"\$HOME/', cmd):
             return Decision.DENY, {"reason": "Echo truncating $HOME file"}
 
-        # env with dangerous variable assignments
         env_m = re.search(r'(?:sudo\s+)?env\s+([A-Za-z_][A-Za-z0-9_]*)=(["\']?)([^"]*)\2', original)
         if env_m:
             var_name = env_m.group(1)
@@ -417,48 +385,37 @@ class SecurityPolicy:
             if not re.search(r'sh\s+-c\s+[\'"].*\becho\s+[\'"]\s*(?:Dry|Would|dry|would)', original):
                 return Decision.DENY, {"reason": "Decoded content piped to shell"}
 
-        # ── New checks for strict test failures ──
-
-        # 1. read + eval with variable (Real-world destructive #11)
+        # Additional checks for strict test failures
         if re.search(r'read\s+.*\s+cmd\s*;.*eval\s*"\$cmd"', original):
             return Decision.DENY, {"reason": "Read then eval of variable"}
 
-        # 2. Python exec with base64 or fromhex (base64 and hex categories)
         python_match = re.search(r'python3?\s+-c\s+(["\'])(.*?)(?<!\\)\1', original, re.DOTALL)
         if python_match:
             code = python_match.group(2)
             if re.search(r'exec\s*\(\s*(?:base64\.b64decode|bytes\.fromhex)', code):
                 return Decision.DENY, {"reason": "Python exec with obfuscated payload"}
 
-        # 3. cat piped to shell (pipelines category)
         if re.search(r'cat\s+/\S+\s*\|\s*(?:sh|bash|zsh)\b', original):
             return Decision.DENY, {"reason": "File piped to shell"}
 
-        # 4. nohup with dangerous shell -c (background category)
         if re.search(r'nohup\s+.*(?:sh|bash|zsh)\s+-c\s+[\'"].*rm\s+-rf', original):
             return Decision.DENY, {"reason": "nohup with dangerous shell command"}
 
-        # 5. kill -9 -1 (process_kill)
         if re.search(r'kill\s+-9\s+-1\b', original):
             return Decision.DENY, {"reason": "Kill all processes"}
 
-        # 6. kill with pgrep substitution (process_kill)
         if re.search(r'kill\s+\$\(pgrep', original):
             return Decision.DENY, {"reason": "Kill with pgrep substitution"}
 
-        # 7. mv from $HOME to somewhere (replacement)
         if re.search(r'mv\s+.*?\$HOME/.*?\s+', original):
             return Decision.DENY, {"reason": "Moving file from $HOME"}
 
-        # 8. cp /dev/null to $HOME (replacement)
         if re.search(r'cp\s+/dev/null\s+.*?\$HOME', original):
             return Decision.DENY, {"reason": "Copying /dev/null to $HOME"}
 
-        # 9. install /dev/null to $HOME (replacement)
         if re.search(r'install\s+/dev/null\s+.*?\$HOME', original):
             return Decision.DENY, {"reason": "Installing /dev/null to $HOME"}
 
-        # 10. Function with eval/bash -c inside (functions category)
         if re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{\s*(?:eval|bash\s+-c|sh\s+-c).*rm\s+-rf', original):
             return Decision.DENY, {"reason": "Function with dangerous eval/bash -c"}
 
@@ -473,7 +430,7 @@ class SecurityPolicy:
         if depth > 10:
             return Decision.ASK, {"reason": "Max recursion depth exceeded"}
 
-        # ── EARLY: Safe decode-only (base64/xxd without pipe to shell) ──
+        # ── Early: safe decode-only (no shell pipe) ──
         has_decode = re.search(r'\|\s*(?:base64|xxd)\s+-(?:d|r|p)', raw_cmd)
         if has_decode:
             has_shell_pipe = re.search(r'\|\s*(?:sh|bash|zsh)\b', raw_cmd)
@@ -482,19 +439,25 @@ class SecurityPolicy:
             if not has_shell_pipe and not has_shell_wrapper and not has_write_then_exec:
                 return Decision.ALLOW, {"reason": "Safe decode-only (no shell execution)"}
 
-        # ── EARLY: Check raw command for safe dry-run pipeline ──
+        # ── Early: safe dry-run pipelines ──
         if self._is_safe_dry_run_pipeline(raw_cmd):
             return Decision.ALLOW, {"reason": "Safe dry-run pipeline"}
 
-        # ── EARLY: Check raw command for patterns that survive normalization/stripping ──
+        # ── Explicit dangerous base64/xxd decode to shell ──
+        if re.search(r'(?:echo|printf)\s+.*\|\s*base64\s+-d\s*\|\s*(?:sh|bash|zsh)\b', raw_cmd, re.IGNORECASE | re.DOTALL):
+            return Decision.DENY, {"reason": "Base64 decoded command piped to shell"}
+        if re.search(r'(?:echo|printf)\s+.*\|\s*xxd\s+-(?:r\s+-p|p\s+-r)\s*\|\s*(?:sh|bash|zsh)\b', raw_cmd, re.IGNORECASE | re.DOTALL):
+            return Decision.DENY, {"reason": "XXD decoded command piped to shell"}
+
+        # ── Early: raw rm patterns ──
         raw_decision, raw_info = self._check_raw_rm_patterns(raw_cmd)
         if raw_decision == Decision.DENY:
             return raw_decision, raw_info
 
-        # Normalize after early checks
+        # Normalise
         cmd = normalize_command(raw_cmd)
 
-        # ── PRE-RESOLVE: Detect shell wrappers with dangerous substitutions ──
+        # ── Shell wrappers with dangerous substitutions ──
         if re.search(r'(?:eval|sh\s+-c|bash\s+-c|zsh\s+-c)\b', raw_cmd):
             if re.search(r'\$\(.*(?:curl|wget)', raw_cmd):
                 return Decision.DENY, {"reason": "Shell wrapper with remote download substitution"}
@@ -504,12 +467,12 @@ class SecurityPolicy:
                 if not re.search(r"\|\s*sed\s*['\"]\S*echo\b", raw_cmd):
                     return Decision.DENY, {"reason": "Shell wrapper with decode substitution"}
 
-        # ── Unwrap literal bash -c / sh -c / eval ──
+        # ── Unwrap literal wrappers ──
         unwrapped, inner = self._unwrap_literal_wrapper(cmd)
         if unwrapped and inner is not None:
             return self.evaluate(inner, session_id, skip_allowlist, depth + 1)
 
-        # ── Resolve eval/sh -c wrappers and subshells ──
+        # ── Resolve eval/sh -c / subshells ──
         resolved, final_payload = resolve_whole_command_wrapper(raw_cmd)
         if resolved and final_payload is not None:
             if is_inert_echo_statement(final_payload):
@@ -520,11 +483,11 @@ class SecurityPolicy:
         if self._has_variable_concatenation_danger(cmd):
             return Decision.DENY, {"reason": "Variable concatenation builds dangerous command"}
 
-        # ── Dangerous variable assignment and usage ──
+        # ── Dangerous variable usage ──
         if self._has_dangerous_variable_usage(cmd):
             return Decision.DENY, {"reason": "Dangerous variable assignment and usage"}
 
-        # ── Obfuscation decoding ──
+        # ── Obfuscation decode ──
         decoded = decode_obfuscated(raw_cmd)
         if decoded and len(decoded) >= len(raw_cmd) * 0.4:
             dec_decision, dec_info = self.evaluate(decoded, session_id, skip_allowlist, depth + 1)
@@ -543,7 +506,7 @@ class SecurityPolicy:
         if global_decision in (Decision.DENY, Decision.ASK):
             return global_decision, global_info
 
-        # ── Split into sub-commands ──
+        # ── Split into sub‑commands ──
         sub_cmds = split_commands(cmd)
         if len(sub_cmds) > 1:
             decisions = []
@@ -586,14 +549,14 @@ class SecurityPolicy:
         if self.config.block_git_force_push and re.search(r'git\s+push\s+--force', stripped_cmd):
             return Decision.DENY, {"reason": "Force push is blocked by policy"}
 
-        # 5. Obfuscation in scripts
+        # 5. Obfuscation
         if self.config.block_obfuscation:
             scripts = extract_embedded_scripts(cmd)
             for script in scripts:
                 if self._is_obfuscated(script):
                     return Decision.DENY, {"reason": "Obfuscated script detected"}
 
-        # 6. Pack patterns (using stripped only to avoid false positives on safe echo/printf)
+        # 6. Packs
         for pack in self.packs:
             safe_match = any(pat.search(stripped_cmd) for pat in pack["safe"])
             if safe_match:
