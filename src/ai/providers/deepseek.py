@@ -18,70 +18,82 @@ class DeepSeekProvider(AIProvider):
         print("[DeepSeek] Connecting...")
         self.page = self.browser.launch()
 
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                self.page.goto("https://chat.deepseek.com")
-                self.page.wait_for_load_state("networkidle")
-                break
-            except Exception as e:
-                print(f"[DeepSeek] Page load attempt {attempt} failed: {e}")
-                if attempt == max_retries:
-                    raise
-                time.sleep(2)
+        # If the page was reused, it might already be on DeepSeek, but we ensure it
+        if "chat.deepseek.com" not in self.page.url:
+            self.page.goto("https://chat.deepseek.com")
+            self.page.wait_for_load_state("networkidle")
 
         self.observer = DOMObserver(self.page)
         self.observer.start()
 
         print("[DeepSeek] Connected")
 
+    def _ensure_page(self):
+        """Check if the page is still alive; if not, reconnect."""
+        try:
+            self.page.evaluate("1")
+        except Exception as e:
+            print(f"[DeepSeek] Page is closed or unresponsive: {e}")
+            print("[DeepSeek] Attempting to reconnect...")
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+            self.connect()
+            time.sleep(1)
+
     def send_prompt(self, prompt):
+        self._ensure_page()
+
         print("[DeepSeek] Injecting prompt...")
 
-        result = self.page.evaluate(
-            """
-            (text) => {
-                const textarea = document.querySelector(
-                    'textarea[placeholder="Message DSeek"]'
-                );
-                if (!textarea) {
-                    return false;
+        for attempt in range(3):
+            try:
+                self.page.wait_for_selector(
+                    'textarea[placeholder="Message DSeek"]',
+                    state="attached",
+                    timeout=5000
+                )
+                break
+            except Exception as e:
+                if attempt == 2:
+                    raise Exception("DeepSeek input not found after retries") from e
+                print(f"[DeepSeek] Textarea not ready, retrying ({attempt+1}/3)...")
+                time.sleep(1)
+
+        self.page.fill('textarea[placeholder="Message DSeek"]', prompt)
+
+        try:
+            self.page.wait_for_function(
+                """
+                () => {
+                    const btn = document.querySelector(
+                        'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
+                    );
+                    return btn !== null;
                 }
-                const setter = Object.getOwnPropertyDescriptor(
-                    HTMLTextAreaElement.prototype,
-                    "value"
-                ).set;
-                setter.call(textarea, text);
-                textarea.dispatchEvent(new Event("input", { bubbles: true }));
-                textarea.dispatchEvent(new Event("change", { bubbles: true }));
-                return true;
-            }
-            """,
-            prompt
-        )
-
-        if not result:
-            raise Exception("DeepSeek input not found")
-
-        print("[DeepSeek] Prompt injected")
-        self._click_send()
+                """,
+                timeout=10000
+            )
+            self.page.click(
+                'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
+            )
+            print("[DeepSeek] Sent via button click")
+        except Exception as e:
+            print(f"[DeepSeek] Button click failed, falling back to Enter key: {e}")
+            self.page.keyboard.press("Enter")
+            print("[DeepSeek] Sent via Enter key")
 
     def _click_send(self):
         print("[DeepSeek] Clicking send...")
-
         button = self.page.locator(
             'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
         ).last
-
         button.wait_for(timeout=5000)
         button.click()
         print("[DeepSeek] Sent")
 
     def _inject_retry_observer(self):
-        """
-        Inject a MutationObserver that auto-clicks DeepSeek's
-        "Check network and retry" button the instant it appears.
-        """
         self.page.evaluate("""
             () => {
                 if (window.__autonect_retry_observer) return;
@@ -104,8 +116,6 @@ class DeepSeekProvider(AIProvider):
 
     def _wait_for_response(self):
         print("[DeepSeek] Waiting for response (retry observer active) ...")
-
-        # Inject the retry observer BEFORE waiting
         self._inject_retry_observer()
 
         self.page.evaluate("""
@@ -144,10 +154,8 @@ class DeepSeekProvider(AIProvider):
 
     def get_response(self):
         self._wait_for_response()
-
         print("[DeepSeek] Extracting response...")
 
-        # Extract thinking from the LAST thinking block, with code blocks removed
         thinking_text = self.page.evaluate("""
             () => {
                 const blocks = document.querySelectorAll('.ds-think-content');
@@ -159,9 +167,6 @@ class DeepSeekProvider(AIProvider):
             }
         """)
 
-        # Extract answer AND commands from the LAST assistant message.
-        # Replace code blocks with unique, alphanumeric placeholders that survive
-        # the HTML-to-markdown conversion without triggering escape characters.
         answer_data = self.page.evaluate("""
             () => {
                 const containers = document.querySelectorAll('.ds-assistant-message-main-content');
@@ -183,7 +188,6 @@ class DeepSeekProvider(AIProvider):
                     }
                     codeBlocks.push({ idx, lang, code });
 
-                    // Replace code block with placeholder
                     const placeholder = document.createTextNode(
                         `\n\nCODEBLOCKPLACEHOLDER${idx}\n\n`
                     );
@@ -202,22 +206,18 @@ class DeepSeekProvider(AIProvider):
         code_blocks = answer_data["codeBlocks"] if answer_data else []
         commands = answer_data["commands"] if answer_data else []
 
-        # Convert HTML → markdown (placeholders stay as plain text)
         markdown = md(html_content, heading_style="ATX") if html_content else ""
 
         markdown = re.sub(r'\n*Copy\n*', '\n', markdown)
         markdown = re.sub(r'\n*Download\n*', '\n', markdown)
 
-        # ── Blended palette (matches Catppuccin Mocha) ──
-        header_bg  = "#222428"   # --bg-header
-        header_text = "#ececec"  # --text-primary
-        btn_bg     = "#2e3137"   # muted hover
-        btn_text   = "#b4b4b4"   # --text-secondary
-        code_bg    = "#1a1b1e"   # --bg-card  (subtle inset)
-        code_text  = "#d4d4d4"   # readable
+        header_bg  = "#222428"
+        header_text = "#ececec"
+        btn_bg     = "#2e3137"
+        btn_text   = "#b4b4b4"
+        code_bg    = "#1a1b1e"
+        code_text  = "#d4d4d4"
 
-        # Replace placeholders safely using string replacement instead of regex
-        # This prevents crashes or failure to replace if the code contains regex syntax like \n or \1
         for block in code_blocks:
             idx = block["idx"]
             lang = block["lang"]
@@ -227,20 +227,13 @@ class DeepSeekProvider(AIProvider):
             display_lang = lang if lang else "text"
 
             if display_lang == "command":
-                # Keep the command block in markdown so script.js can parse it and replace it inline
                 markdown = markdown.replace(placeholder_str, f"\n\n```command\n{code}\n```\n\n")
                 continue
 
-            # Encode raw code to Base64 for safe clipboard execution
             encoded_code = base64.b64encode(code.encode('utf-8')).decode('utf-8')
-
-            # Escape HTML tags without escaping quotes into entities like &quot;
             escaped_code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-            # Prevent empty lines (\n\n) from breaking Markdown raw HTML parsing mode
             escaped_code = re.sub(r'\n(?=\n)', '\n&#8203;', escaped_code)
 
-            # Unified HTML Card with sticky header bar styling
             formatted_block = (
                 f'<div style="background-color: {code_bg} !important; border-radius: 8px; margin: 1em 0; font-family: monospace; position: relative; border: 1px solid rgba(255,255,255,0.1);">'
                 f'<div style="display: flex; justify-content: space-between; align-items: center; '
@@ -264,10 +257,8 @@ class DeepSeekProvider(AIProvider):
 
             markdown = markdown.replace(placeholder_str, f"\n\n{formatted_block}\n\n")
 
-        # Safety net: remove any placeholders that weren't replaced
         markdown = re.sub(r'\s*CODEBLOCKPLACEHOLDER\d+\s*', '\n', markdown)
 
-        # Fix task lists, normalise markers, clean up spacing
         markdown = re.sub(
             r'\*\s*☑\s*\n\s*\n\s*(.*?)(?=\n|$)',
             r'- [x] \1',

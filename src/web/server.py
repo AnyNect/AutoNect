@@ -11,13 +11,19 @@ from typing import Optional
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
 from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.security import CommandGuard
+
+# ── Single‑thread executor for Playwright ──
+_provider_executor = ThreadPoolExecutor(max_workers=1)
 
 provider: DeepSeekProvider | None = None
 guard = CommandGuard()
@@ -42,10 +48,12 @@ async def lifespan(app: FastAPI):
     global provider
     loop = asyncio.get_running_loop()
     provider = DeepSeekProvider()
-    await loop.run_in_executor(None, provider.connect)
+    # Connect on the dedicated thread
+    await loop.run_in_executor(_provider_executor, provider.connect)
     yield
-    if provider:
-        await loop.run_in_executor(None, provider.close)
+    # Cleanup on the same thread
+    await loop.run_in_executor(_provider_executor, provider.close)
+    _provider_executor.shutdown(wait=False)
 
 
 app = FastAPI(title="AutoNect Chat", lifespan=lifespan)
@@ -88,20 +96,15 @@ def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stde
 
 
 def _annotate_commands_with_safety(commands: list[dict], session_id: str = "default") -> list[dict]:
-    """Add a 'safety' field to each command dict."""
     annotated = []
     for cmd in commands:
         decision, info = guard.evaluate(cmd["code"], session_id)
-        # Map 'ask' to 'warn' for UI (brown "Unsure" tag), else keep as is
         if decision == "ask":
             safety = "warn"
         else:
-            safety = decision  # "allow" or "deny"
+            safety = decision
         cmd["safety"] = safety
-        if safety != "allow" and info:
-            cmd["safety_reason"] = info.get("reason", "")
-        else:
-            cmd["safety_reason"] = ""
+        cmd["safety_reason"] = info.get("reason", "") if safety != "allow" else ""
         annotated.append(cmd)
     return annotated
 
@@ -117,10 +120,7 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     thinking_commands = extract_commands(thinking)
     thinking_codes = {cmd["code"] for cmd in thinking_commands}
     commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
-
-    # Annotate with safety
     commands = _annotate_commands_with_safety(commands, session_id)
-
     return thinking, answer, commands
 
 
@@ -148,7 +148,7 @@ async def chat(request: ChatRequest):
         provider.send_prompt(full_prompt)
         return provider.get_response()
 
-    response = await loop.run_in_executor(None, send_and_get)
+    response = await loop.run_in_executor(_provider_executor, send_and_get)
     thinking, answer, commands = _extract_response(response, request.session_id)
     return ChatResponse(thinking=thinking, answer=answer, commands=commands)
 
@@ -157,7 +157,6 @@ async def chat(request: ChatRequest):
 async def websocket_execute(websocket: WebSocket):
     await websocket.accept()
 
-    # Receive command from client
     init_msg = await websocket.receive_text()
     try:
         cmd_data = json.loads(init_msg)
@@ -171,7 +170,6 @@ async def websocket_execute(websocket: WebSocket):
         await websocket.close(code=4000, reason="No command provided")
         return
 
-    # ── Security Guard ──
     decision, info = guard.evaluate(command, session_id)
     if decision == "deny":
         await websocket.send_text(json.dumps({
@@ -181,7 +179,6 @@ async def websocket_execute(websocket: WebSocket):
         await websocket.close(code=4000, reason="Blocked")
         return
     elif decision == "ask":
-        # Ask user for approval
         await websocket.send_text(json.dumps({
             "type": "ask",
             "command": command,
@@ -189,11 +186,10 @@ async def websocket_execute(websocket: WebSocket):
             "path": info.get("path", ""),
             "session_id": session_id
         }))
-        # Wait for user response
         try:
             approval = await websocket.receive_text()
             data = json.loads(approval)
-            action = data.get("action")  # "allow_once", "allow_session", "deny"
+            action = data.get("action")
             path = data.get("path", "")
             if action == "allow_once":
                 guard.approve_once(command, path)
@@ -204,15 +200,12 @@ async def websocket_execute(websocket: WebSocket):
                 await websocket.close(code=4000, reason="Denied by user")
                 return
         except Exception:
-            # fail closed
             await websocket.send_text(json.dumps({"type": "denied", "reason": "Approval error"}))
             await websocket.close(code=4000, reason="Approval error")
             return
 
-    # If we get here, command is allowed (or approved)
     print(f"[WebSocket] Running: {command[:100]}...")
 
-    # Fork PTY
     pid, master_fd = pty.fork()
     if pid == 0:
         try:
@@ -333,7 +326,6 @@ async def websocket_execute(websocket: WebSocket):
 
 @app.post("/api/ai-feedback", response_model=AIFeedbackResponse)
 async def ai_feedback(request: AIFeedbackRequest):
-    """Feed command output to the AI and return its analysis."""
     if not provider:
         return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
 
@@ -346,7 +338,7 @@ async def ai_feedback(request: AIFeedbackRequest):
         provider.send_prompt(wrapped)
         return provider.get_response()
 
-    ai_response = await loop.run_in_executor(None, send_wrapped_and_get)
+    ai_response = await loop.run_in_executor(_provider_executor, send_wrapped_and_get)
     thinking, answer, commands = _extract_response(ai_response)
     return AIFeedbackResponse(
         thinking=thinking,
