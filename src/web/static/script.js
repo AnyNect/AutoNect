@@ -6,6 +6,7 @@ const sendBtn = document.getElementById('send-btn');
 const sessionId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
 
 let animationActive = false;
+let autoAllowEnabled = false;
 let isProcessing = false;          // true when AI is generating
 
 /* ── Queue state ── */
@@ -404,6 +405,20 @@ function getCommandSafetyTag(safety) {
     }
 }
 
+
+function toggleAutoAllow() {
+    autoAllowEnabled = !autoAllowEnabled;
+    const btn = document.getElementById('autoAllowBtn');
+    const offIcon = document.getElementById('auto-allow-off');
+    const onIcon = document.getElementById('auto-allow-on');
+    if (btn) {
+        btn.classList.toggle('active', autoAllowEnabled);
+        if (offIcon) offIcon.style.display = autoAllowEnabled ? 'none' : 'block';
+        if (onIcon) onIcon.style.display = autoAllowEnabled ? 'block' : 'none';
+        btn.title = autoAllowEnabled ? 'Disable Auto-Allow' : 'Enable Auto-Allow';
+    }
+    console.log('Auto-Allow enabled:', autoAllowEnabled);
+}
 function createCommandSection(commands) {
     const cmdSection = document.createElement('div');
     cmdSection.className = 'command-section';
@@ -465,6 +480,11 @@ function createCommandSection(commands) {
         declineBtn.onclick = (e) => { e.stopPropagation(); handleDecline(card); };
         allowBtn.onclick = (e) => { e.stopPropagation(); handleAllow(card); };
         terminalBtn.onclick = (e) => { e.stopPropagation(); openTerminalModal(commandCode); };
+        // Auto-Allow if enabled
+        if (autoAllowEnabled && safety === 'allow') {
+            setTimeout(() => handleAllow(card), 100);
+        }
+
         body.appendChild(pre); body.appendChild(btnRow); body.appendChild(outputArea);
         bodyWrapper.appendChild(body);
         card.appendChild(header); card.appendChild(bodyWrapper);
@@ -1044,6 +1064,18 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+
+/* ── Auto-Allow Button Initialization ── */
+const autoAllowBtn = document.getElementById('autoAllowBtn');
+if (autoAllowBtn) {
+    autoAllowBtn.addEventListener('click', toggleAutoAllow);
+    // Initialize icon states
+    const offIcon = document.getElementById('auto-allow-off');
+    const onIcon = document.getElementById('auto-allow-on');
+    if (offIcon) offIcon.style.display = 'block';
+    if (onIcon) onIcon.style.display = 'none';
 }
 
 promptInput.focus();

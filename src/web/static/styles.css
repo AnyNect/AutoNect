@@ -330,7 +330,7 @@ header {
     margin: 10px 0;
 }
 
-/* Input Container */
+/* ── Input Container ── */
 #input-container {
     width: 100%;
     display: flex;
@@ -340,62 +340,108 @@ header {
     background: linear-gradient(180deg, rgba(33, 33, 33, 0) 0%, var(--bg-main) 30%);
 }
 
-.input-box {
+.input-wrapper {
     width: 100%;
     max-width: 768px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* ── Main Input Box (two-row layout) ── */
+.input-box {
+    width: 100%;
     background-color: var(--bg-input);
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 26px;
-    padding: 10px 12px 10px 20px;
-    display: flex;
-    align-items: flex-end;
-    gap: 12px;
+    border-radius: 20px;
+    padding: 12px 16px 12px 20px;
     transition: border-color 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .input-box:focus-within {
     border-color: rgba(255, 255, 255, 0.25);
 }
 
+/* ── Textarea wrapper (optional) ── */
+.input-textarea-wrap {
+    width: 100%;
+}
+
+/* ── Textarea ── */
 #prompt {
-    flex: 1;
+    width: 100%;
     background: transparent;
     border: none;
+    outline: none;
     color: var(--text-primary);
     resize: none;
     font-family: inherit;
-    font-size: 1rem;
-    outline: none;
-    max-height: 200px;
+    font-size: 16px;
     line-height: 1.5;
-    padding: 4px 0;
+    padding: 6px 0;
+    max-height: 4.5em; /* 3 lines */          /* ~4 lines (4 * 1.5 * 16px = 96px) */
+    min-height: 1.5em;
+    overflow-y: auto;
+overflow-y: auto;
 }
 
 #prompt::placeholder {
-    color: var(--text-muted);
+    color: #727379;            /* match reference */
 }
 
+/* ── Controls Row ── */
+.input-controls-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 4px;
+}
+
+.controls-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.controls-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* ── Send Button ── */
 #send-btn {
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
-    background-color: #ffffff;
-    color: #000000;
+    background-color: #385183;
+    color: #8c9cb6;
     border: none;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: opacity 0.2s;
+    transition: background-color 0.2s, color 0.2s, opacity 0.2s;
     flex-shrink: 0;
+    padding: 0;
+}
+
+#send-btn:hover:not(:disabled) {
+    background-color: #43609c;
+    color: #ffffff;
 }
 
 #send-btn:disabled {
-    opacity: 0.2;
+    opacity: 0.3;
     cursor: not-allowed;
-    background-color: #ffffff;
+    background-color: #2a2a2e;
+    color: #6a6a72;
 }
 
+/* ── Footer note (unchanged) ── */
 .footer-note {
     font-size: 0.75rem;
     color: var(--text-muted);
@@ -403,7 +449,7 @@ header {
     text-align: center;
 }
 
-/* Portal Loader */
+/* ── Portal Loader (unchanged) ── */
 .portal-oval {
     position: relative;
     width: 160px;
@@ -1197,4 +1243,48 @@ header {
 @keyframes fadeInCmd {
     from { opacity: 0; transform: translateY(2px); }
     to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Auto-Allow Active State ── */
+
+/* Auto-Allow Button Base */
+/* ── Auto-Allow Button (Blended) ── */
+#autoAllowBtn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: transparent !important; background-color: transparent !important; -webkit-appearance: none; appearance: none;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin-right: 6px;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+#autoAllowBtn:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+#autoAllowBtn svg {
+    width: 26px;
+    height: 26px;
+}
+
+/* Active state (ON) */
+#autoAllowBtn.active {
+    background: rgba(74, 222, 128, 0.1);
+}
+
+#autoAllowBtn.active svg {
+    filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.4));
+}
+
+/* Adjust icon size to be more visible */
+#autoAllowBtn svg {
+    width: 40px !important;
+    height: 40px !important;
 }
