@@ -30,3 +30,7 @@ This file serves as a persistent log for the AI assistant to record any mistakes
 ## Permissions
 - User has explicitly allowed the AI to commit and push to the `AutoNect-AI` branch (2026-08-27).
 - No other branches should be pushed without explicit permission.
+
+## Shell Safety
+- When writing `.md` files or any content with backticks, use `cat << 'EOF'` (single quotes) or single-quoted strings.
+- Never use `echo` with double quotes when content includes backticks or `$`.
