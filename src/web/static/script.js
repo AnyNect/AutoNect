@@ -7,6 +7,7 @@ const sessionId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toStr
 
 let animationActive = false;
 let autoAllowEnabled = false;
+let activeCommandGroup = null;
 let isProcessing = false;          // true when AI is generating
 
 /* ── Queue state ── */
@@ -304,6 +305,14 @@ function addMessage(role, content, thinking = '', commands = []) {
 
         // INLINE COMMAND CARDS: Replace matching <pre> blocks dynamically
         if (commands && commands.length > 0) {
+            const group = {
+                total: commands.length,
+                completed: 0,
+                outputs: [],
+                resolved: false,
+                onComplete: null
+            };
+            activeCommandGroup = group;
             let remainingCommands = [...commands];
             const preBlocks = bubble.querySelectorAll('pre');
 
@@ -318,19 +327,19 @@ function addMessage(role, content, thinking = '', commands = []) {
 
                 if (matchIndex !== -1) {
                     const cmd = remainingCommands[matchIndex];
-                    const cmdSection = createCommandSection([cmd]);
+                    const cmdSection = createCommandSection([cmd], group);
                     preEl.parentNode.replaceChild(cmdSection, preEl);
                     remainingCommands.splice(matchIndex, 1);
                 } else if (isCommandClass && remainingCommands.length > 0) {
                     const cmd = remainingCommands[0];
-                    const cmdSection = createCommandSection([cmd]);
+                    const cmdSection = createCommandSection([cmd], group);
                     preEl.parentNode.replaceChild(cmdSection, preEl);
                     remainingCommands.shift();
                 }
             });
 
             if (remainingCommands.length > 0) {
-                const fallbackSection = createCommandSection(remainingCommands);
+                const fallbackSection = createCommandSection(remainingCommands, group);
                 bubble.appendChild(fallbackSection);
             }
         }
@@ -419,7 +428,7 @@ function toggleAutoAllow() {
     }
     console.log('Auto-Allow enabled:', autoAllowEnabled);
 }
-function createCommandSection(commands) {
+function createCommandSection(commands, group = null) {
     const cmdSection = document.createElement('div');
     cmdSection.className = 'command-section';
     commands.forEach((cmd) => {
@@ -431,6 +440,7 @@ function createCommandSection(commands) {
         card.dataset.commandText = commandCode;
         card.dataset.statusText = 'PENDING APPROVAL';
         card.dataset.statusColor = 'var(--color-pending)';
+        card._group = group;
 
         const header = document.createElement('div');
         header.className = 'command-header';
@@ -669,25 +679,47 @@ async function handleAllow(card) {
         card.classList.remove('expanded');
         updateCommandCardTitle(card);
 
-        // AI feedback
-        (async () => {
+        // AI feedback (batch or single)
+        const sendBatchFeedback = async (outputs) => {
             try {
                 const fbResponse = await fetch('/api/ai-feedback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        command: commandStr,
-                        stdout: collectedOutput,
-                        stderr: '',
-                        exit_code: exitCode,
-                    }),
+                    body: JSON.stringify({ commands: outputs }),
                 });
                 if (fbResponse.ok) {
                     const fbData = await fbResponse.json();
                     if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
                 }
             } catch (fbError) { console.error('AI feedback failed:', fbError); }
-        })();
+        };
+
+        const sendSingleFeedback = async (cmd, out, code) => {
+            try {
+                const fbResponse = await fetch('/api/ai-feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: cmd, stdout: out, stderr: '', exit_code: code }),
+                });
+                if (fbResponse.ok) {
+                    const fbData = await fbResponse.json();
+                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+                }
+            } catch (fbError) { console.error('AI feedback failed:', fbError); }
+        };
+
+        if (card._group) {
+            const group = card._group;
+            group.outputs.push({ command: commandStr, stdout: collectedOutput, stderr: '', exit_code: exitCode });
+            group.completed++;
+            if (group.completed === group.total && !group.resolved) {
+                group.resolved = true;
+                activeCommandGroup = null;
+                sendBatchFeedback(group.outputs);
+            }
+        } else {
+            sendSingleFeedback(commandStr, collectedOutput, exitCode);
+        }
 
         isProcessing = false;
         sendBtn.disabled = !promptInput.value.trim();
