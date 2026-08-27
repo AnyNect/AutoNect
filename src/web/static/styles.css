@@ -1288,3 +1288,15 @@ overflow-y: auto;
     width: 40px !important;
     height: 40px !important;
 }
+
+/* Auto-Allow countdown */
+.auto-allow-countdown {
+    display: block;
+    margin-top: 5px;
+    font-size: 0.8rem;
+    color: var(--color-warn);
+    background: rgba(255, 193, 7, 0.1);
+    padding: 4px 8px;
+    border-radius: 4px;
+    text-align: center;
+}

@@ -493,6 +493,25 @@ function createCommandSection(commands, group = null) {
         // Auto-Allow if enabled
         if (autoAllowEnabled && safety === 'allow') {
             setTimeout(() => handleAllow(card), 100);
+        } else if (autoAllowEnabled && safety === 'warn') {
+            // Grace period: wait 5 seconds, then auto-allow
+            let countdown = 5;
+            const timerEl = document.createElement('span');
+            timerEl.className = 'auto-allow-countdown';
+            timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
+            body.appendChild(timerEl);
+
+            const timer = setInterval(() => {
+                countdown--;
+                timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
+                if (countdown <= 0) {
+                    clearInterval(timer);
+                    if (timerEl.parentNode) timerEl.remove();
+                    handleAllow(card);
+                }
+            }, 1000);
+            card._autoAllowTimer = timer;
+            card._autoAllowTimerEl = timerEl;
         }
 
         body.appendChild(pre); body.appendChild(btnRow); body.appendChild(outputArea);
@@ -503,7 +522,25 @@ function createCommandSection(commands, group = null) {
     return cmdSection;
 }
 
+async function sendBatchFeedback(outputs) {
+    try {
+        const fbResponse = await fetch('/api/ai-feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ commands: outputs }),
+        });
+        if (fbResponse.ok) {
+            const fbData = await fbResponse.json();
+            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+        }
+    } catch (fbError) { console.error('AI feedback failed:', fbError); }
+}
+
 function handleDecline(card) {
+    if (card._autoAllowTimer) {
+        clearInterval(card._autoAllowTimer);
+        if (card._autoAllowTimerEl) card._autoAllowTimerEl.remove();
+    }
     const btnRow = card.querySelector('.command-btn-row');
     const cursor = card.querySelector('.cursor');
     const titleElem = card.querySelector('.command-header-title');
@@ -523,9 +560,25 @@ function handleDecline(card) {
     titleElem.style.color = activeColor;
     card.classList.remove('expanded');
     updateCommandCardTitle(card);
+
+    // Batch group logic for declined commands
+    if (card._group) {
+        const group = card._group;
+        group.outputs.push({ command: commandStr, stdout: '', stderr: 'Declined by user', exit_code: -1 });
+        group.completed++;
+        if (group.completed === group.total && !group.resolved) {
+            group.resolved = true;
+            activeCommandGroup = null;
+            sendBatchFeedback(group.outputs);
+        }
+    }
 }
 
 async function handleAllow(card) {
+    if (card._autoAllowTimer) {
+        clearInterval(card._autoAllowTimer);
+        if (card._autoAllowTimerEl) card._autoAllowTimerEl.remove();
+    }
     const btnRow = card.querySelector('.command-btn-row');
     const outputArea = card.querySelector('.command-output-area');
     const cursor = card.querySelector('.cursor');
@@ -680,20 +733,6 @@ async function handleAllow(card) {
         updateCommandCardTitle(card);
 
         // AI feedback (batch or single)
-        const sendBatchFeedback = async (outputs) => {
-            try {
-                const fbResponse = await fetch('/api/ai-feedback', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ commands: outputs }),
-                });
-                if (fbResponse.ok) {
-                    const fbData = await fbResponse.json();
-                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
-                }
-            } catch (fbError) { console.error('AI feedback failed:', fbError); }
-        };
-
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
                 const fbResponse = await fetch('/api/ai-feedback', {
