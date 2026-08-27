@@ -23,6 +23,6 @@
     "node_modules/"
   ],
   "block_shell_composition": true,
-  "block_git_force_push": true,
+  "block_git_force_push": false,
   "block_obfuscation": true
 }

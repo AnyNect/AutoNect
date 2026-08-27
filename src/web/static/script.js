@@ -977,13 +977,26 @@ function showApprovalDialog(command, reason) {
                     <p style="margin-bottom:10px;"><strong>Command:</strong> <code style="background:#00000030; padding:2px 6px; border-radius:4px;">${escapeHtml(command)}</code></p>
                     <p style="margin-bottom:20px; color:var(--text-sub);">${escapeHtml(reason)}</p>
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
-                        <button class="command-btn decline-btn" onclick="this.closest('.terminal-modal-overlay').remove(); resolve('deny')">Deny</button>
-                        <button class="command-btn allow-btn" onclick="this.closest('.terminal-modal-overlay').remove(); resolve('allow_once')">Allow Once</button>
-                        <button class="command-btn terminal-btn" onclick="this.closest('.terminal-modal-overlay').remove(); resolve('allow_session')">Allow Session</button>
+                        <button class="command-btn decline-btn">Deny</button>
+                        <button class="command-btn allow-btn">Allow Once</button>
+                        <button class="command-btn terminal-btn">Allow Session</button>
                     </div>
                 </div>
             </div>`;
         document.body.appendChild(overlay);
+
+        const closeDialog = (action) => {
+            overlay.remove();
+            resolve(action);
+        };
+
+        const declineBtn = overlay.querySelector('.decline-btn');
+        const allowOnceBtn = overlay.querySelector('.allow-btn');
+        const allowSessionBtn = overlay.querySelector('.terminal-btn');
+
+        declineBtn.addEventListener('click', () => closeDialog('deny'));
+        allowOnceBtn.addEventListener('click', () => closeDialog('allow_once'));
+        allowSessionBtn.addEventListener('click', () => closeDialog('allow_session'));
     });
 }
 
