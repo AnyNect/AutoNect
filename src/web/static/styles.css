@@ -32,7 +32,6 @@
 
     /* Crisp Cool Lemon Yellow */
     --color-queued: #fde047;
-
     /* ── Command Card Matte Palette ── */
     --bg-canvas: #121316;
     --bg-card: #1a1b1e;
@@ -45,7 +44,6 @@
     --color-error: #f87171;
     --color-terminal: #89b4fa;
     --color-denied: #ff9f43;
-
     /* ── Redesigned Button Palette ── */
     --btn-decline-bg: #2a171a;
     --btn-decline-hover: #3d1c22;
@@ -382,14 +380,13 @@ header {
     font-size: 16px;
     line-height: 1.5;
     padding: 6px 0;
-    max-height: 4.5em; /* 3 lines */          /* ~4 lines (4 * 1.5 * 16px = 96px) */
+    max-height: 4.5em;
     min-height: 1.5em;
     overflow-y: auto;
-overflow-y: auto;
 }
 
 #prompt::placeholder {
-    color: #727379;            /* match reference */
+    color: #727379;
 }
 
 /* ── Controls Row ── */
@@ -441,7 +438,7 @@ overflow-y: auto;
     color: #6a6a72;
 }
 
-/* ── Footer note (unchanged) ── */
+/* ── Footer note ── */
 .footer-note {
     font-size: 0.75rem;
     color: var(--text-muted);
@@ -449,7 +446,7 @@ overflow-y: auto;
     text-align: center;
 }
 
-/* ── Portal Loader (unchanged) ── */
+/* ── Portal Loader ── */
 .portal-oval {
     position: relative;
     width: 160px;
@@ -643,12 +640,13 @@ overflow-y: auto;
 }
 
 .command-card.expanded .command-body-wrapper {
-    grid-template-rows: 1fr;
+    grid-template-rows: auto;
 }
 
 .command-body {
     overflow: hidden;
     border-radius: 0 0 10px 10px;
+    min-height: 0;
 }
 
 /* Code Display & Context Badges */
@@ -720,7 +718,7 @@ overflow-y: auto;
 }
 
 .cmd-tag-unsure {
-    background: rgba(251, 191, 36, 0.1);   /* warm brown/amber tint */
+    background: rgba(251, 191, 36, 0.1);
     color: #fbbf24;
     border-color: rgba(251, 191, 36, 0.25);
 }
@@ -812,13 +810,15 @@ overflow-y: auto;
     color: #ffffff;
 }
 
-/* Output Terminal — pure text, no badges */
+/* Output Terminal */
 .command-output-area {
     background: var(--bg-output);
     font-family: var(--font-mono);
     font-size: 0.825rem;
     position: relative;
     border: none;
+    min-height: 0;
+    height: auto;
 }
 
 .progress-bar {
@@ -960,16 +960,8 @@ overflow-y: auto;
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Queue Bubble — Blended Dark Theme (unchanged)
+   Queue Bubble — Blended Dark Theme
    ══════════════════════════════════════════════════════════════ */
-
-.input-wrapper {
-    width: 100%;
-    max-width: 768px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-}
 
 .queue-bubble {
     display: none;
@@ -1245,10 +1237,7 @@ overflow-y: auto;
     to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── Auto-Allow Active State ── */
-
-/* Auto-Allow Button Base */
-/* ── Auto-Allow Button (Blended) ── */
+/* ── Auto-Allow Button ── */
 #autoAllowBtn {
     width: 40px;
     height: 40px;
@@ -1269,12 +1258,6 @@ overflow-y: auto;
     background: rgba(255, 255, 255, 0.08);
 }
 
-#autoAllowBtn svg {
-    width: 26px;
-    height: 26px;
-}
-
-/* Active state (ON) */
 #autoAllowBtn.active {
     background: rgba(74, 222, 128, 0.1);
 }
@@ -1283,13 +1266,11 @@ overflow-y: auto;
     filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.4));
 }
 
-/* Adjust icon size to be more visible */
 #autoAllowBtn svg {
     width: 40px !important;
     height: 40px !important;
 }
 
-/* Auto-Allow countdown */
 .auto-allow-countdown {
     display: block;
     margin-top: 5px;
@@ -1299,4 +1280,36 @@ overflow-y: auto;
     padding: 4px 8px;
     border-radius: 4px;
     text-align: center;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Command Card Terminal Container - NATIVE XTERM WRAPPER
+   ══════════════════════════════════════════════════════════════ */
+
+.terminal-container {
+    width: 100%;
+    display: block;
+    box-sizing: border-box;
+    background-color: #121316;
+    border-radius: 6px;
+    padding: 0;
+    /* CRITICAL: Shrink-wrap the terminal to content height */
+    height: fit-content !important;
+    min-height: 24px; /* Approximate height of exactly one row */
+    overflow-y: hidden; /* Let xterm handle its own internal scrolling when max rows are reached */
+    align-self: start; /* Prevent flex/grid stretching */
+}
+
+.terminal-container .xterm {
+    height: 100% !important;
+    padding: 0 !important;
+}
+
+.terminal-container .xterm-viewport {
+    background-color: transparent !important;
+    overflow-y: auto !important;
+}
+
+.terminal-container .xterm-rows {
+    font-family: var(--font-mono);
 }

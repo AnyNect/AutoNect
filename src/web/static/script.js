@@ -3,7 +3,8 @@ const chatArea = document.getElementById('chat-area');
 const chatContainer = document.getElementById('chat-container');
 const promptInput = document.getElementById('prompt');
 const sendBtn = document.getElementById('send-btn');
-const sessionId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
+const sessionId = crypto.randomUUID ?
+crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
 
 let animationActive = false;
 let autoAllowEnabled = false;
@@ -168,8 +169,9 @@ function saveEdit(index, event) {
 }
 
 function handleEditKeyDown(event, index) {
-    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveEdit(index, event); }
-    else if (event.key === 'Escape') { editingIndex = null; renderQueue(); }
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveEdit(index, event);
+    } else if (event.key === 'Escape') { editingIndex = null; renderQueue();
+    }
 }
 
 function removeTask(index, event) {
@@ -231,7 +233,8 @@ function onPointerUp(event) {
     window.removeEventListener('pointercancel', onPointerUp);
     const { itemEl, initialIndex, currentTargetIndex, items, isDragging } = activeDrag;
     if (isDragging) {
-        try { itemEl.releasePointerCapture(event.pointerId); } catch (e) {}
+        try { itemEl.releasePointerCapture(event.pointerId);
+        } catch (e) {}
         itemEl.classList.remove('dragging');
         if (initialIndex !== currentTargetIndex) {
             const movedItem = taskQueue.splice(initialIndex, 1)[0];
@@ -249,7 +252,8 @@ function onPointerUp(event) {
 }
 
 function renderQueue() {
-    if (taskQueue.length === 0) { queueBubble.style.display = 'none'; return; }
+    if (taskQueue.length === 0) { queueBubble.style.display = 'none'; return;
+    }
     queueBubble.style.display = 'flex';
     queueBadge.textContent = `${taskQueue.length} ${isPaused ? 'PAUSED' : 'QUEUED'}`;
     queueList.innerHTML = taskQueue.map((prompt, index) => {
@@ -261,7 +265,8 @@ function renderQueue() {
                 ${isEditing ? `<textarea id="edit-field-${index}" class="edit-input" rows="1" oninput="autoResizeEdit(this)" onkeydown="handleEditKeyDown(event, ${index})" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation()" ondblclick="event.stopPropagation()">${escapeHtml(prompt)}</textarea>` : `<span class="queue-prompt" ondblclick="enableEdit(${index}, event)" title="Double click to edit">${escapeHtml(prompt)}</span>`}
             </div>
             <div class="queue-actions">
-                ${isEditing ? `<button class="task-action-btn save" title="Save" onclick="saveEdit(${index}, event)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></button>` : `<button class="task-action-btn" title="Edit Task" onclick="enableEdit(${index}, event)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>`}
+                ${isEditing ?
+                `<button class="task-action-btn save" title="Save" onclick="saveEdit(${index}, event)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></button>` : `<button class="task-action-btn" title="Edit Task" onclick="enableEdit(${index}, event)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>`}
                 <button class="task-action-btn delete" title="Cancel Task" onclick="removeTask(${index}, event)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
             </div>
         </div>`;
@@ -277,7 +282,7 @@ function addMessage(role, content, thinking = '', commands = []) {
     row.className = `message-row ${role}`;
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
-
+    
     if (thinking && role === 'assistant') {
         const details = document.createElement('details');
         details.className = 'thinking-block';
@@ -294,7 +299,6 @@ function addMessage(role, content, thinking = '', commands = []) {
 
     if (role === 'assistant') {
         bubble.innerHTML = marked.parse(content);
-
         // Apply Highlight.js to any code blocks that were injected as raw HTML
         bubble.querySelectorAll('pre code[class*="language-"]').forEach((codeEl) => {
             if (codeEl.closest('.command-section')) return;
@@ -302,7 +306,7 @@ function addMessage(role, content, thinking = '', commands = []) {
             const pre = codeEl.closest('pre');
             if (pre) pre.style.color = '';
         });
-
+        
         // INLINE COMMAND CARDS: Replace matching <pre> blocks dynamically
         if (commands && commands.length > 0) {
             const group = {
@@ -315,7 +319,7 @@ function addMessage(role, content, thinking = '', commands = []) {
             activeCommandGroup = group;
             let remainingCommands = [...commands];
             const preBlocks = bubble.querySelectorAll('pre');
-
+            
             preBlocks.forEach((preEl) => {
                 const codeEl = preEl.querySelector('code');
                 if (!codeEl) return;
@@ -337,7 +341,7 @@ function addMessage(role, content, thinking = '', commands = []) {
                     remainingCommands.shift();
                 }
             });
-
+            
             if (remainingCommands.length > 0) {
                 const fallbackSection = createCommandSection(remainingCommands, group);
                 bubble.appendChild(fallbackSection);
@@ -362,10 +366,13 @@ function toggleCommandCard(headerElem) {
     card.classList.toggle('expanded');
     updateCommandCardTitle(card);
 
-    // If there's a terminal, refit on expand
+    // Fit only columns to prevent vertical expansion glitches
     if (card.classList.contains('expanded') && card._term) {
         setTimeout(() => {
-            if (card._fitAddon) card._fitAddon.fit();
+            if (card._fitAddon) {
+                const dims = card._fitAddon.proposeDimensions();
+                if (dims) card._term.resize(dims.cols, card._term.rows);
+            }
         }, 50);
     }
 }
@@ -376,7 +383,7 @@ function updateCommandCardTitle(card) {
     const statusText = card.dataset.statusText || 'PENDING APPROVAL';
     const statusColor = card.dataset.statusColor || 'var(--color-pending)';
     const commandText = card.dataset.commandText || '';
-
+    
     if (isExpanded) {
         titleElem.style.color = statusColor;
         updateHeaderTitleSmooth(titleElem, statusText, false);
@@ -404,16 +411,12 @@ function updateHeaderTitleSmooth(titleElem, newText, isCommand) {
 // ── Safety tag (only three states) ──
 function getCommandSafetyTag(safety) {
     switch (safety) {
-        case 'deny':
-            return { text: 'UNSAFE', class: 'cmd-tag-unsafe' };
-        case 'warn':
-            return { text: 'UNSURE', class: 'cmd-tag-unsure' };
+        case 'deny': return { text: 'UNSAFE', class: 'cmd-tag-unsafe' };
+        case 'warn': return { text: 'UNSURE', class: 'cmd-tag-unsure' };
         case 'allow':
-        default:
-            return { text: 'SAFE', class: 'cmd-tag-safe' };
+        default: return { text: 'SAFE', class: 'cmd-tag-safe' };
     }
 }
-
 
 function toggleAutoAllow() {
     autoAllowEnabled = !autoAllowEnabled;
@@ -428,9 +431,11 @@ function toggleAutoAllow() {
     }
     console.log('Auto-Allow enabled:', autoAllowEnabled);
 }
+
 function createCommandSection(commands, group = null) {
     const cmdSection = document.createElement('div');
     cmdSection.className = 'command-section';
+    
     commands.forEach((cmd) => {
         const commandCode = cmd.code || '';
         const card = document.createElement('div');
@@ -446,7 +451,7 @@ function createCommandSection(commands, group = null) {
         header.className = 'command-header';
         header.onclick = () => toggleCommandCard(header);
         header.innerHTML = `<div class="command-header-left"><div class="status-dot-wrapper"><span class="status-dot" style="background-color: var(--color-pending);"></span><span class="pulse-ring"></span></div><span class="command-header-title" style="color: var(--color-pending);">PENDING APPROVAL</span></div><svg class="command-arrow" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
-
+        
         const bodyWrapper = document.createElement('div');
         bodyWrapper.className = 'command-body-wrapper';
         const body = document.createElement('div');
@@ -464,7 +469,7 @@ function createCommandSection(commands, group = null) {
                 <span class="cursor"></span>
             </div>
             ${tagHtml}`;
-
+            
         const btnRow = document.createElement('div');
         btnRow.className = 'command-btn-row';
         btnRow.innerHTML = `
@@ -480,27 +485,27 @@ function createCommandSection(commands, group = null) {
                     <line x1="12" y1="19" x2="20" y2="19"></line>
                 </svg>Open Terminal
             </button>`;
-
+            
         const declineBtn = btnRow.querySelector('.decline-btn');
         const allowBtn = btnRow.querySelector('.allow-btn');
         const terminalBtn = btnRow.querySelector('.terminal-btn');
         const outputArea = document.createElement('div');
         outputArea.className = 'command-output-area';
         outputArea.innerHTML = '<div class="progress-bar"></div>';
+        
         declineBtn.onclick = (e) => { e.stopPropagation(); handleDecline(card); };
         allowBtn.onclick = (e) => { e.stopPropagation(); handleAllow(card); };
         terminalBtn.onclick = (e) => { e.stopPropagation(); openTerminalModal(commandCode); };
+        
         // Auto-Allow if enabled
         if (autoAllowEnabled && safety === 'allow') {
             setTimeout(() => handleAllow(card), 100);
         } else if (autoAllowEnabled && safety === 'warn') {
-            // Grace period: wait 5 seconds, then auto-allow
             let countdown = 5;
             const timerEl = document.createElement('span');
             timerEl.className = 'auto-allow-countdown';
             timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
             body.appendChild(timerEl);
-
             const timer = setInterval(() => {
                 countdown--;
                 timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
@@ -550,6 +555,7 @@ function handleDecline(card) {
     if (cursor) cursor.classList.add('hidden');
     if (btnRow) btnRow.remove();
     if (pulseRing) pulseRing.remove();
+    
     const activeColor = 'var(--color-denied)';
     const stateText = 'COMMAND DENIED';
     card.dataset.activeColor = activeColor;
@@ -560,7 +566,7 @@ function handleDecline(card) {
     titleElem.style.color = activeColor;
     card.classList.remove('expanded');
     updateCommandCardTitle(card);
-
+    
     // Batch group logic for declined commands
     if (card._group) {
         const group = card._group;
@@ -582,10 +588,9 @@ async function handleAllow(card) {
     const btnRow = card.querySelector('.command-btn-row');
     const outputArea = card.querySelector('.command-output-area');
     const cursor = card.querySelector('.cursor');
-    const progressBar = outputArea.querySelector('.progress-bar');
+    const pulseRing = card.querySelector('.pulse-ring');
     const titleElem = card.querySelector('.command-header-title');
     const statusDot = card.querySelector('.status-dot');
-    const pulseRing = card.querySelector('.pulse-ring');
     const commandStr = card.dataset.command || '';
 
     isProcessing = true; sendBtn.disabled = true;
@@ -593,7 +598,7 @@ async function handleAllow(card) {
     if (btnRow) btnRow.remove();
     if (pulseRing) pulseRing.remove();
 
-    // Remove old output and progress bar, prepare terminal container
+    // Prepare clean wrapper
     outputArea.innerHTML = '';
     const terminalContainer = document.createElement('div');
     terminalContainer.className = 'terminal-container active';
@@ -602,12 +607,16 @@ async function handleAllow(card) {
     titleElem.style.color = 'var(--text-sub)';
     updateHeaderTitleSmooth(titleElem, 'EXECUTING…', false);
 
-    // Create xterm terminal
+    // CRITICAL: Construct strictly isolated xterm environment
     const term = new Terminal({
         cursorBlink: true,
         cursorStyle: 'bar',
         fontFamily: 'var(--font-mono)',
         fontSize: 13,
+        lineHeight: 1.2,
+        rows: 1,  // FORCE to exactly 1 row initially
+        cols: 80,
+        scrollback: 1000,
         theme: {
             background: '#121316',
             foreground: '#ececec',
@@ -632,28 +641,42 @@ async function handleAllow(card) {
             brightWhite: '#f8fafc',
         },
     });
-
+    
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
 
     term.open(terminalContainer);
-    fitAddon.fit();
+    
+    // Fit columns natively, lock rows precisely to 1 to dodge height layout glitches
+    const dims = fitAddon.proposeDimensions();
+    term.resize(dims ? dims.cols : 80, 1);
+
+    const maxRows = 20; // Set the maximum height before internal scrolling kicks in
+    term.onLineFeed(() => {
+        const buffer = term.buffer.active;
+        const contentRows = buffer.baseY + buffer.cursorY + 1;
+        const currentRows = term.rows;
+        if (contentRows > currentRows && currentRows < maxRows) {
+            term.resize(term.cols, contentRows);
+        }
+    });
 
     card._term = term;
     card._fitAddon = fitAddon;
     card._terminalContainer = terminalContainer;
+    card._isExecuting = true;
 
     // Connect to WebSocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/execute`;
     const ws = new WebSocket(wsUrl);
     card._ws = ws;
-
+    
     ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'exec', command: commandStr }));
     };
-
+    
     let collectedOutput = '';
     let exitCode = -1;
 
@@ -662,8 +685,23 @@ async function handleAllow(card) {
             const reader = new FileReader();
             reader.onload = () => {
                 const bytes = new Uint8Array(reader.result);
-                term.write(bytes);
-                collectedOutput += new TextDecoder().decode(bytes);
+                // Use a callback to evaluate state AFTER xterm parses stdout chunk
+                term.write(bytes, () => {
+                    collectedOutput += new TextDecoder().decode(bytes);
+                    
+                    // Directly calculate rows off of visual cursor baseline + actual cursor position
+                    const buffer = term.buffer.active;
+                    const actualLines = buffer.baseY + buffer.cursorY + 1;
+                    
+                    // Clamp dimensions for responsive shrink-wrapping up to ~400px (22 rows)
+                    const targetRows = Math.min(22, Math.max(1, actualLines));
+                    const currentCols = fitAddon.proposeDimensions()?.cols || term.cols || 80;
+                    
+                    // Apply strictly to xterm configuration 
+                    if (term.rows !== targetRows || term.cols !== currentCols) {
+                        term.resize(currentCols, targetRows);
+                    }
+                });
             };
             reader.readAsArrayBuffer(event.data);
         } else {
@@ -678,39 +716,26 @@ async function handleAllow(card) {
             } else if (msg.type === 'warning') {
                 term.writeln('\r\n\x1b[33m⚠ ' + msg.message + '\x1b[0m');
             } else if (msg.type === 'ask') {
-                // Auto-allow command (no approval dialog)
                 ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
-                // The server will now either execute the command (and send more data)
-                // or send a "denied" message, which will be handled in the next onmessage call.
             }
         }
     };
-
+    
     ws.onclose = () => {
-        // Process ended – keep terminal visible but readonly
+        card._isExecuting = false;
         term.options.disableStdin = true;
         term.options.cursorBlink = false;
-        term.write('\x1b[?25l');  // hide cursor
+        term.write('\x1b[?25l'); 
 
-        // Switch to readonly layout
         terminalContainer.classList.remove('active');
         terminalContainer.classList.add('readonly');
 
-        // Compute actual content height from buffer lines (skip trailing empty lines)
+        // Do one final resize explicitly wrapped to true end buffer coordinates
         const buffer = term.buffer.active;
-        let lastContentLine = 0;
-        for (let i = buffer.length - 1; i >= 0; i--) {
-            const lineText = buffer.getLine(i)?.translateToString().trim();
-            if (lineText && lineText !== '') {
-                lastContentLine = i + 1;
-                break;
-            }
-        }
-        const contentLines = lastContentLine > 0 ? lastContentLine : term.rows;
-        const LINE_HEIGHT = 18;
-        const contentHeight = contentLines * LINE_HEIGHT + 16;
-        terminalContainer.style.maxHeight = Math.min(contentHeight, 400) + 'px';
-        terminalContainer.style.height = 'auto';
+        const actualLines = buffer.baseY + buffer.cursorY + 1;
+        const targetRows = Math.min(22, Math.max(1, actualLines));
+        const currentCols = fitAddon.proposeDimensions()?.cols || term.cols || 80;
+        term.resize(currentCols, targetRows);
 
         delete card._ws;
 
@@ -732,7 +757,6 @@ async function handleAllow(card) {
         card.classList.remove('expanded');
         updateCommandCardTitle(card);
 
-        // AI feedback (batch or single)
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
                 const fbResponse = await fetch('/api/ai-feedback', {
@@ -764,30 +788,34 @@ async function handleAllow(card) {
         sendBtn.disabled = !promptInput.value.trim();
         processNextQueueTask();
     };
-
+    
     ws.onerror = (err) => {
         console.error('WebSocket error:', err);
         term.write('\r\n\x1b[31mConnection error\x1b[0m\r\n');
         ws.close();
     };
-
+    
     term.onData((data) => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "stdin", data: data }));
         }
     });
-
+    
     term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         }
     });
-
+    
+    // Fit widths specifically (DO NOT manipulate heights to prevent stretching layout)
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
             if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-                if (card.classList.contains('expanded') && card._term) {
-                    setTimeout(() => card._fitAddon.fit(), 50);
+                if (card.classList.contains('expanded') && card._term && !card._isExecuting) {
+                    setTimeout(() => {
+                        const dims = card._fitAddon.proposeDimensions();
+                        if (dims) card._term.resize(dims.cols, card._term.rows);
+                    }, 50);
                 }
             }
         });
@@ -797,26 +825,22 @@ async function handleAllow(card) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Terminal Modal (Pop‑up) – with reliable close using window keydown capture
+   Terminal Modal (Pop‑up) 
    ═══════════════════════════════════════════════════════════════ */
 
-// ── Global references for modal terminal ──
 let _modalTerm = null;
 let _modalWs = null;
 let _modalCommandExited = false;
-let _modalCloseListener = null; // window keydown listener
+let _modalCloseListener = null;
 
 function openTerminalModal(commandStr) {
     const overlay = document.getElementById('terminal-modal');
     const container = document.getElementById('modal-terminal-container');
     container.innerHTML = '';
-
-    // Close any previous modal websocket/terminal
     closeModalResources();
 
     overlay.classList.add('active');
-
-    // Create new terminal instance
+    
     const term = new Terminal({
         cursorBlink: true,
         cursorStyle: 'block',
@@ -829,17 +853,16 @@ function openTerminalModal(commandStr) {
             selection: 'rgba(59, 130, 246, 0.3)',
         },
     });
+    
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
     term.open(container);
     setTimeout(() => fitAddon.fit(), 100);
-
-    // Store globally for cleanup
+    
     _modalTerm = term;
     _modalCommandExited = false;
 
-    // ── Write the full Konsole‑style header ──
     const header = [
         '',
         '\x1b[38;2;0;212;255m',
@@ -860,7 +883,6 @@ function openTerminalModal(commandStr) {
 
     term.focus();
 
-    // ── Connect WebSocket ──
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/execute`;
     const ws = new WebSocket(wsUrl);
@@ -900,7 +922,6 @@ function openTerminalModal(commandStr) {
                     term.writeln(`\x1b[48;2;220;53;69m\x1b[38;2;255;255;255m\x1b[1m  ✗ EXECUTION FAILED  \x1b[0m \x1b[38;2;255;255;255m(Exit Code: ${exitCode} | Time: ${elapsed}s)\x1b[0m`);
                 }
                 term.writeln('');
-
                 term.writeln('\x1b[38;2;0;212;255mSending output to AI for feedback...\x1b[0m');
                 try {
                     const fbResponse = await fetch('/api/ai-feedback', {
@@ -930,7 +951,6 @@ function openTerminalModal(commandStr) {
                 term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
                 term.focus();
 
-                // Add global keydown listener with capture to close on any key
                 if (!_modalCloseListener) {
                     _modalCloseListener = (e) => {
                         if (overlay.classList.contains('active')) {
@@ -973,7 +993,7 @@ function openTerminalModal(commandStr) {
             }
         }
     };
-
+    
     ws.onerror = (err) => {
         term.writeln('\x1b[31mWebSocket error\x1b[0m');
         ws.close();
@@ -1054,7 +1074,7 @@ async function runPortalAnimation() {
     let index = 0;
     const track = document.getElementById('portal-track');
     if (!track) return;
-
+    
     function createItem(state, fullText = false) {
         const div = document.createElement('div');
         div.className = 'item';
@@ -1065,7 +1085,7 @@ async function runPortalAnimation() {
 
     let currentItem = createItem(states[index]);
     track.appendChild(currentItem);
-
+    
     while (animationActive && document.getElementById('portal-track')) {
         const labelEl = currentItem.querySelector('.label');
         if (!labelEl.textContent) {
