@@ -124,6 +124,25 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     return thinking, answer, commands
 
 
+
+
+def clean_deepseek_markdown(text: str) -> str:
+    """Clean common markdown artifacts from DeepSeek responses."""
+    # Remove unnecessary surrounding triple backticks if present
+    if text.strip().startswith("```") and text.strip().endswith("```"):
+        text = text.strip()[3:-3].strip()
+    # Remove standalone language identifiers at start
+    lines = text.splitlines()
+    if lines and lines[0].strip().lower() in ["python", "javascript", "bash", "sh", "css", "html"]:
+        lines = lines[1:]
+    # Ensure code fences are balanced
+    fence_count = sum(1 for line in lines if line.strip().startswith("```"))
+    if fence_count % 2 == 1:
+        lines.append("```")
+    cleaned = "\n".join(lines)
+    return cleaned
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(content=INDEX_HTML)

@@ -1,4 +1,4 @@
-from browser.manager import BrowserManager
+from src.browser.manager import BrowserManager
 
 
 browser = BrowserManager()

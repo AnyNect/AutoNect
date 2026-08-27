@@ -1,4 +1,4 @@
-from core.config import config
+from src.core.config import config
 
 
 print("Headless:", config.get("browser", "headless"))
