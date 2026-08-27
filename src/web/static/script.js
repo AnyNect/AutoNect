@@ -7,6 +7,7 @@ const sessionId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toStr
 
 let animationActive = false;
 let autoAllowEnabled = false;
+let activeCommandGroup = null;
 let isProcessing = false;          // true when AI is generating
 
 /* ── Queue state ── */
@@ -304,6 +305,14 @@ function addMessage(role, content, thinking = '', commands = []) {
 
         // INLINE COMMAND CARDS: Replace matching <pre> blocks dynamically
         if (commands && commands.length > 0) {
+            const group = {
+                total: commands.length,
+                completed: 0,
+                outputs: [],
+                resolved: false,
+                onComplete: null
+            };
+            activeCommandGroup = group;
             let remainingCommands = [...commands];
             const preBlocks = bubble.querySelectorAll('pre');
 
@@ -318,19 +327,19 @@ function addMessage(role, content, thinking = '', commands = []) {
 
                 if (matchIndex !== -1) {
                     const cmd = remainingCommands[matchIndex];
-                    const cmdSection = createCommandSection([cmd]);
+                    const cmdSection = createCommandSection([cmd], group);
                     preEl.parentNode.replaceChild(cmdSection, preEl);
                     remainingCommands.splice(matchIndex, 1);
                 } else if (isCommandClass && remainingCommands.length > 0) {
                     const cmd = remainingCommands[0];
-                    const cmdSection = createCommandSection([cmd]);
+                    const cmdSection = createCommandSection([cmd], group);
                     preEl.parentNode.replaceChild(cmdSection, preEl);
                     remainingCommands.shift();
                 }
             });
 
             if (remainingCommands.length > 0) {
-                const fallbackSection = createCommandSection(remainingCommands);
+                const fallbackSection = createCommandSection(remainingCommands, group);
                 bubble.appendChild(fallbackSection);
             }
         }
@@ -419,7 +428,7 @@ function toggleAutoAllow() {
     }
     console.log('Auto-Allow enabled:', autoAllowEnabled);
 }
-function createCommandSection(commands) {
+function createCommandSection(commands, group = null) {
     const cmdSection = document.createElement('div');
     cmdSection.className = 'command-section';
     commands.forEach((cmd) => {
@@ -431,6 +440,7 @@ function createCommandSection(commands) {
         card.dataset.commandText = commandCode;
         card.dataset.statusText = 'PENDING APPROVAL';
         card.dataset.statusColor = 'var(--color-pending)';
+        card._group = group;
 
         const header = document.createElement('div');
         header.className = 'command-header';
@@ -483,6 +493,25 @@ function createCommandSection(commands) {
         // Auto-Allow if enabled
         if (autoAllowEnabled && safety === 'allow') {
             setTimeout(() => handleAllow(card), 100);
+        } else if (autoAllowEnabled && safety === 'warn') {
+            // Grace period: wait 5 seconds, then auto-allow
+            let countdown = 5;
+            const timerEl = document.createElement('span');
+            timerEl.className = 'auto-allow-countdown';
+            timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
+            body.appendChild(timerEl);
+
+            const timer = setInterval(() => {
+                countdown--;
+                timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
+                if (countdown <= 0) {
+                    clearInterval(timer);
+                    if (timerEl.parentNode) timerEl.remove();
+                    handleAllow(card);
+                }
+            }, 1000);
+            card._autoAllowTimer = timer;
+            card._autoAllowTimerEl = timerEl;
         }
 
         body.appendChild(pre); body.appendChild(btnRow); body.appendChild(outputArea);
@@ -493,7 +522,25 @@ function createCommandSection(commands) {
     return cmdSection;
 }
 
+async function sendBatchFeedback(outputs) {
+    try {
+        const fbResponse = await fetch('/api/ai-feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ commands: outputs }),
+        });
+        if (fbResponse.ok) {
+            const fbData = await fbResponse.json();
+            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+        }
+    } catch (fbError) { console.error('AI feedback failed:', fbError); }
+}
+
 function handleDecline(card) {
+    if (card._autoAllowTimer) {
+        clearInterval(card._autoAllowTimer);
+        if (card._autoAllowTimerEl) card._autoAllowTimerEl.remove();
+    }
     const btnRow = card.querySelector('.command-btn-row');
     const cursor = card.querySelector('.cursor');
     const titleElem = card.querySelector('.command-header-title');
@@ -513,9 +560,25 @@ function handleDecline(card) {
     titleElem.style.color = activeColor;
     card.classList.remove('expanded');
     updateCommandCardTitle(card);
+
+    // Batch group logic for declined commands
+    if (card._group) {
+        const group = card._group;
+        group.outputs.push({ command: commandStr, stdout: '', stderr: 'Declined by user', exit_code: -1 });
+        group.completed++;
+        if (group.completed === group.total && !group.resolved) {
+            group.resolved = true;
+            activeCommandGroup = null;
+            sendBatchFeedback(group.outputs);
+        }
+    }
 }
 
 async function handleAllow(card) {
+    if (card._autoAllowTimer) {
+        clearInterval(card._autoAllowTimer);
+        if (card._autoAllowTimerEl) card._autoAllowTimerEl.remove();
+    }
     const btnRow = card.querySelector('.command-btn-row');
     const outputArea = card.querySelector('.command-output-area');
     const cursor = card.querySelector('.cursor');
@@ -615,9 +678,8 @@ async function handleAllow(card) {
             } else if (msg.type === 'warning') {
                 term.writeln('\r\n\x1b[33m⚠ ' + msg.message + '\x1b[0m');
             } else if (msg.type === 'ask') {
-                // Show approval dialog and wait for user decision
-                const action = await showApprovalDialog(msg.command, msg.reason);
-                ws.send(JSON.stringify({ action: action, path: msg.path || '' }));
+                // Auto-allow command (no approval dialog)
+                ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
                 // The server will now either execute the command (and send more data)
                 // or send a "denied" message, which will be handled in the next onmessage call.
             }
@@ -670,25 +732,33 @@ async function handleAllow(card) {
         card.classList.remove('expanded');
         updateCommandCardTitle(card);
 
-        // AI feedback
-        (async () => {
+        // AI feedback (batch or single)
+        const sendSingleFeedback = async (cmd, out, code) => {
             try {
                 const fbResponse = await fetch('/api/ai-feedback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        command: commandStr,
-                        stdout: collectedOutput,
-                        stderr: '',
-                        exit_code: exitCode,
-                    }),
+                    body: JSON.stringify({ command: cmd, stdout: out, stderr: '', exit_code: code }),
                 });
                 if (fbResponse.ok) {
                     const fbData = await fbResponse.json();
                     if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
                 }
             } catch (fbError) { console.error('AI feedback failed:', fbError); }
-        })();
+        };
+
+        if (card._group) {
+            const group = card._group;
+            group.outputs.push({ command: commandStr, stdout: collectedOutput, stderr: '', exit_code: exitCode });
+            group.completed++;
+            if (group.completed === group.total && !group.resolved) {
+                group.resolved = true;
+                activeCommandGroup = null;
+                sendBatchFeedback(group.outputs);
+            }
+        } else {
+            sendSingleFeedback(commandStr, collectedOutput, exitCode);
+        }
 
         isProcessing = false;
         sendBtn.disabled = !promptInput.value.trim();
@@ -871,8 +941,7 @@ function openTerminalModal(commandStr) {
                 }
 
             } else if (msg.type === 'ask') {
-                const action = await showApprovalDialog(msg.command, msg.reason);
-                ws.send(JSON.stringify({ action: action, path: msg.path || '' }));
+                ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
             } else if (msg.type === 'denied') {
                 term.writeln('\x1b[31mCommand denied: ' + (msg.reason || '') + '\x1b[0m');
                 ws.close();
@@ -959,47 +1028,6 @@ function closeTerminalModal() {
     closeModalResources();
     document.getElementById('terminal-modal').classList.remove('active');
 }
-
-/* ═══════════════════════════════════════════════════════════════
-   Approval Dialog (used both in command cards and modal)
-   ═══════════════════════════════════════════════════════════════ */
-
-function showApprovalDialog(command, reason) {
-    return new Promise((resolve) => {
-        const overlay = document.createElement('div');
-        overlay.className = 'terminal-modal-overlay active';
-        overlay.innerHTML = `
-            <div class="terminal-modal" style="height:auto; max-width:500px;">
-                <div class="modal-header">
-                    <span class="modal-title">⚠️ Approval Required</span>
-                </div>
-                <div style="padding:20px; color:var(--text-primary);">
-                    <p style="margin-bottom:10px;"><strong>Command:</strong> <code style="background:#00000030; padding:2px 6px; border-radius:4px;">${escapeHtml(command)}</code></p>
-                    <p style="margin-bottom:20px; color:var(--text-sub);">${escapeHtml(reason)}</p>
-                    <div style="display:flex; gap:8px; justify-content:flex-end;">
-                        <button class="command-btn decline-btn">Deny</button>
-                        <button class="command-btn allow-btn">Allow Once</button>
-                        <button class="command-btn terminal-btn">Allow Session</button>
-                    </div>
-                </div>
-            </div>`;
-        document.body.appendChild(overlay);
-
-        const closeDialog = (action) => {
-            overlay.remove();
-            resolve(action);
-        };
-
-        const declineBtn = overlay.querySelector('.decline-btn');
-        const allowOnceBtn = overlay.querySelector('.allow-btn');
-        const allowSessionBtn = overlay.querySelector('.terminal-btn');
-
-        declineBtn.addEventListener('click', () => closeDialog('deny'));
-        allowOnceBtn.addEventListener('click', () => closeDialog('allow_once'));
-        allowSessionBtn.addEventListener('click', () => closeDialog('allow_session'));
-    });
-}
-
 /* ═══════════════════════════════════════════════════════════════
    Loading portal
    ═══════════════════════════════════════════════════════════════ */

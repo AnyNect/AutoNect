@@ -72,10 +72,11 @@ class ChatResponse(BaseModel):
 
 
 class AIFeedbackRequest(BaseModel):
-    command: str
-    stdout: str
-    stderr: str
-    exit_code: int
+    commands: list[dict] = []
+    command: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    exit_code: int | None = None
 
 
 class AIFeedbackResponse(BaseModel):
@@ -93,6 +94,19 @@ def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stde
         f"stderr:\n{stderr}\n"
         f"[/SYSTEM_COMMAND_OUTPUT]"
     )
+
+def build_wrapped_commands_output(commands: list[dict]) -> str:
+    parts = []
+    for cmd in commands:
+        parts.append(
+            f"[SYSTEM_COMMAND_OUTPUT]\n"
+            f"Command: {cmd.get('command', '')}\n"
+            f"Exit code: {cmd.get('exit_code', -1)}\n"
+            f"stdout:\n{cmd.get('stdout', '')}\n"
+            f"stderr:\n{cmd.get('stderr', '')}\n"
+            f"[/SYSTEM_COMMAND_OUTPUT]"
+        )
+    return "\n\n".join(parts)
 
 
 def _annotate_commands_with_safety(commands: list[dict], session_id: str = "default") -> list[dict]:
@@ -351,9 +365,12 @@ async def ai_feedback(request: AIFeedbackRequest):
     loop = asyncio.get_running_loop()
 
     def send_wrapped_and_get():
-        wrapped = build_wrapped_command_output(
-            request.command, request.exit_code, request.stdout, request.stderr
-        )
+        if request.commands:
+            wrapped = build_wrapped_commands_output(request.commands)
+        else:
+            wrapped = build_wrapped_command_output(
+                request.command, request.exit_code, request.stdout, request.stderr
+            )
         provider.send_prompt(wrapped)
         return provider.get_response()
 
