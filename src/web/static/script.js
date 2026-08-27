@@ -615,9 +615,8 @@ async function handleAllow(card) {
             } else if (msg.type === 'warning') {
                 term.writeln('\r\n\x1b[33m⚠ ' + msg.message + '\x1b[0m');
             } else if (msg.type === 'ask') {
-                // Show approval dialog and wait for user decision
-                const action = await showApprovalDialog(msg.command, msg.reason);
-                ws.send(JSON.stringify({ action: action, path: msg.path || '' }));
+                // Auto-allow command (no approval dialog)
+                ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
                 // The server will now either execute the command (and send more data)
                 // or send a "denied" message, which will be handled in the next onmessage call.
             }
@@ -871,8 +870,7 @@ function openTerminalModal(commandStr) {
                 }
 
             } else if (msg.type === 'ask') {
-                const action = await showApprovalDialog(msg.command, msg.reason);
-                ws.send(JSON.stringify({ action: action, path: msg.path || '' }));
+                ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
             } else if (msg.type === 'denied') {
                 term.writeln('\x1b[31mCommand denied: ' + (msg.reason || '') + '\x1b[0m');
                 ws.close();
@@ -959,47 +957,6 @@ function closeTerminalModal() {
     closeModalResources();
     document.getElementById('terminal-modal').classList.remove('active');
 }
-
-/* ═══════════════════════════════════════════════════════════════
-   Approval Dialog (used both in command cards and modal)
-   ═══════════════════════════════════════════════════════════════ */
-
-function showApprovalDialog(command, reason) {
-    return new Promise((resolve) => {
-        const overlay = document.createElement('div');
-        overlay.className = 'terminal-modal-overlay active';
-        overlay.innerHTML = `
-            <div class="terminal-modal" style="height:auto; max-width:500px;">
-                <div class="modal-header">
-                    <span class="modal-title">⚠️ Approval Required</span>
-                </div>
-                <div style="padding:20px; color:var(--text-primary);">
-                    <p style="margin-bottom:10px;"><strong>Command:</strong> <code style="background:#00000030; padding:2px 6px; border-radius:4px;">${escapeHtml(command)}</code></p>
-                    <p style="margin-bottom:20px; color:var(--text-sub);">${escapeHtml(reason)}</p>
-                    <div style="display:flex; gap:8px; justify-content:flex-end;">
-                        <button class="command-btn decline-btn">Deny</button>
-                        <button class="command-btn allow-btn">Allow Once</button>
-                        <button class="command-btn terminal-btn">Allow Session</button>
-                    </div>
-                </div>
-            </div>`;
-        document.body.appendChild(overlay);
-
-        const closeDialog = (action) => {
-            overlay.remove();
-            resolve(action);
-        };
-
-        const declineBtn = overlay.querySelector('.decline-btn');
-        const allowOnceBtn = overlay.querySelector('.allow-btn');
-        const allowSessionBtn = overlay.querySelector('.terminal-btn');
-
-        declineBtn.addEventListener('click', () => closeDialog('deny'));
-        allowOnceBtn.addEventListener('click', () => closeDialog('allow_once'));
-        allowSessionBtn.addEventListener('click', () => closeDialog('allow_session'));
-    });
-}
-
 /* ═══════════════════════════════════════════════════════════════
    Loading portal
    ═══════════════════════════════════════════════════════════════ */
