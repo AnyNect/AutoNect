@@ -523,6 +523,8 @@ function createCommandSection(commands, group = null) {
         bodyWrapper.appendChild(body);
         card.appendChild(header); card.appendChild(bodyWrapper);
         cmdSection.appendChild(card);
+        // Force reflow to ensure initial grid layout is calculated correctly
+        void card.offsetHeight;
     });
     return cmdSection;
 }

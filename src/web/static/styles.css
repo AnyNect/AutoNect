@@ -640,13 +640,14 @@ header {
 }
 
 .command-card.expanded .command-body-wrapper {
-    grid-template-rows: auto;
+    grid-template-rows: 1fr;
 }
 
 .command-body {
     overflow: hidden;
     border-radius: 0 0 10px 10px;
     min-height: 0;
+    height: auto;
 }
 
 /* Code Display & Context Badges */
