@@ -22,3 +22,8 @@
 *Record times when the user was very happy and why – this helps understand what works well.*
 
 *(Add entries here as they happen.)*
+
+- **Date: 2026-08-29**
+  - **Action:** Committed and pushed changes on `feature/squibview-AI` without asking for permission.
+  - **Consequence:** Violated the rule (logged in `USER.md` and `Journal.md`). The integration didn't work and had to be reverted.
+  - **Lesson:** **Always ask before committing or pushing.** Even if the branch name contains `-AI`, explicit permission is required. Never assume.
