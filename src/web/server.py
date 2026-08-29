@@ -204,30 +204,26 @@ async def websocket_execute(websocket: WebSocket):
         return
 
     decision, info = guard.evaluate(command, session_id)
-    if decision == "deny":
-        await websocket.send_text(json.dumps({
-            "type": "denied",
-            "reason": info.get("reason", "Blocked by policy")
-        }))
-        await websocket.close(code=4000, reason="Blocked")
-        return
-    elif decision == "ask":
+    # Treat both "ask" and "deny" as needing user approval
+    if decision in ("ask", "deny"):
+        severity = "unsafe" if decision == "deny" else "unsure"
         await websocket.send_text(json.dumps({
             "type": "ask",
             "command": command,
             "reason": info.get("reason", ""),
             "path": info.get("path", ""),
-            "session_id": session_id
+            "session_id": session_id,
+            "severity": severity
         }))
         try:
             approval = await websocket.receive_text()
             data = json.loads(approval)
             action = data.get("action")
             path = data.get("path", "")
-            if action == "allow_once":
+            if action in ("allow_once", "allow_session"):
                 guard.approve_once(command, path)
-            elif action == "allow_session":
-                guard.approve_session(command, path)
+                if action == "allow_session":
+                    guard.approve_session(command, path)
             else:
                 await websocket.send_text(json.dumps({"type": "denied", "reason": "User denied"}))
                 await websocket.close(code=4000, reason="Denied by user")
@@ -236,7 +232,7 @@ async def websocket_execute(websocket: WebSocket):
             await websocket.send_text(json.dumps({"type": "denied", "reason": "Approval error"}))
             await websocket.close(code=4000, reason="Approval error")
             return
-
+    # If decision == "allow", proceed normally
     print(f"[WebSocket] Running: {command[:100]}...")
 
     pid, master_fd = pty.fork()

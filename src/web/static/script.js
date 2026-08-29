@@ -502,6 +502,25 @@ function createCommandSection(commands, group = null) {
             setTimeout(() => handleAllow(card), 100);
         } else if (autoAllowEnabled && safety === 'warn') {
             let countdown = 5;
+        }
+        if (autoAllowEnabled && safety === 'deny') {
+            let countdown = 5;
+            const timerEl = document.createElement('span');
+            timerEl.className = 'auto-deny-countdown';
+            timerEl.textContent = `Auto-Denying in ${countdown}s...`;
+            body.appendChild(timerEl);
+            const timer = setInterval(() => {
+                countdown--;
+                timerEl.textContent = `Auto-Denying in ${countdown}s...`;
+                if (countdown <= 0) {
+                    clearInterval(timer);
+                    if (timerEl.parentNode) timerEl.remove();
+                    handleDecline(card);
+                }
+            }, 1000);
+            card._autoAllowTimer = timer;
+            card._autoAllowTimerEl = timerEl;
+        }
             const timerEl = document.createElement('span');
             timerEl.className = 'auto-allow-countdown';
             timerEl.textContent = `Auto-Allowing in ${countdown}s...`;
