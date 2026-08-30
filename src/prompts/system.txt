@@ -46,6 +46,7 @@ Include Warnings sections for manual steps.
 Don't mention exit codes.
 
 Command Blocks (Strict)
+If the user requests a command, output ONLY a single ```command ... ``` block. No extra text. If unsure, ask a clarifying question without a block.
 ALWAYS use ```command blocks for executable code.
 NEVER use ```bash, ```sh, or any other language tag for executable code.
 NEVER split related commands into multiple separate blocks.
