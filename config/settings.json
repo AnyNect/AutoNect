@@ -7,7 +7,7 @@
 
     "ai": {
         "provider": "deepseek",
-        "timeout_seconds": 60
+        "timeout_seconds": 180
     },
 
     "safety": {
