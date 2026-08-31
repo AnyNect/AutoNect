@@ -15,3 +15,6 @@ prayer_alarm_backup.tar.gz
 nohup.out
 autonect.zip
 uvicorn.log
+server.py.bak
+autonect.zip
+prayer_alarm_backup.tar.gz
