@@ -12,15 +12,71 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+import logging
+from logging.config import dictConfig
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.security import CommandGuard
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+        "detailed": {
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(pathname)s:%(lineno)d - %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+            "formatter": "default",
+            "stream": "ext://sys.stdout",
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "DEBUG",
+            "formatter": "detailed",
+            "filename": "logs/app.log",
+            "maxBytes": 10_485_760,  # 10 MB
+            "backupCount": 5,
+        },
+    },
+    "root": {
+        "level": "DEBUG",
+        "handlers": ["console", "file"],
+    },
+    "loggers": {
+        "uvicorn": {"level": "INFO", "handlers": ["console"], "propagate": False},
+        "uvicorn.error": {"level": "INFO", "handlers": ["console"], "propagate": False},
+        "uvicorn.access": {"level": "INFO", "handlers": ["console"], "propagate": False},
+    },
+}
+
+# Ensure logs directory exists
+Path("logs").mkdir(exist_ok=True)
+
+dictConfig(LOG_CONFIG)
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Application Setup
+# =============================================================================
 
 # ── Single‑thread executor for Playwright ──
 _provider_executor = ThreadPoolExecutor(max_workers=1)
@@ -36,8 +92,10 @@ INDEX_HTML = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 SYSTEM_PROMPT_PATH = Path("src/prompts/system.txt")
 try:
     SYSTEM_PROMPT = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    logger.info("System prompt loaded successfully")
 except FileNotFoundError:
     SYSTEM_PROMPT = ""
+    logger.warning("System prompt file not found at %s", SYSTEM_PROMPT_PATH)
 
 # Session tracking
 session_data = {}
@@ -45,23 +103,48 @@ session_data = {}
 # Maximum output bytes for WebSocket (150 KB)
 MAX_WEBSOCKET_OUTPUT_BYTES = 150_000
 
+# =============================================================================
+# Lifespan & Middleware
+# =============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global provider
+    logger.info("Starting application lifespan")
     loop = asyncio.get_running_loop()
     provider = DeepSeekProvider()
-    # Connect on the dedicated thread
-    await loop.run_in_executor(_provider_executor, provider.connect)
+    try:
+        await loop.run_in_executor(_provider_executor, provider.connect)
+        logger.info("DeepSeek provider connected")
+    except Exception as e:
+        logger.exception("Failed to connect DeepSeek provider")
+        raise
     yield
-    # Cleanup on the same thread
+    logger.info("Shutting down application lifespan")
     await loop.run_in_executor(_provider_executor, provider.close)
     _provider_executor.shutdown(wait=False)
+    logger.info("Cleanup completed")
+
+
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        logger.info("Request: %s %s", request.method, request.url.path)
+        try:
+            response = await call_next(request)
+            logger.info("Response: %s %s - Status %d", request.method, request.url.path, response.status_code)
+            return response
+        except Exception as e:
+            logger.exception("Unhandled exception during request: %s %s", request.method, request.url.path)
+            raise
 
 
 app = FastAPI(title="AutoNect Chat", lifespan=lifespan)
+app.add_middleware(LoggingMiddleware)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# =============================================================================
+# Pydantic Models
+# =============================================================================
 
 class ChatRequest(BaseModel):
     prompt: str
@@ -87,6 +170,10 @@ class AIFeedbackResponse(BaseModel):
     answer: str
     commands: list[dict] = []
 
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stderr: str) -> str:
     return (
@@ -143,14 +230,11 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
 
 def clean_deepseek_markdown(text: str) -> str:
     """Clean common markdown artifacts from DeepSeek responses."""
-    # Remove unnecessary surrounding triple backticks if present
     if text.strip().startswith("```") and text.strip().endswith("```"):
         text = text.strip()[3:-3].strip()
-    # Remove standalone language identifiers at start
     lines = text.splitlines()
     if lines and lines[0].strip().lower() in ["python", "javascript", "bash", "sh", "css", "html"]:
         lines = lines[1:]
-    # Ensure code fences are balanced
     fence_count = sum(1 for line in lines if line.strip().startswith("```"))
     if fence_count % 2 == 1:
         lines.append("```")
@@ -158,14 +242,21 @@ def clean_deepseek_markdown(text: str) -> str:
     return cleaned
 
 
+# =============================================================================
+# HTTP Endpoints
+# =============================================================================
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    logger.info("Serving index page")
     return HTMLResponse(content=INDEX_HTML)
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+    logger.info("Chat request received, session_id=%s", request.session_id)
     if not provider:
+        logger.error("Provider not initialized")
         return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
 
     loop = asyncio.get_running_loop()
@@ -173,47 +264,98 @@ async def chat(request: ChatRequest):
     if request.session_id is None or request.session_id not in session_data:
         if request.session_id is None:
             request.session_id = str(uuid.uuid4())
+            logger.info("New session created: %s", request.session_id)
         full_prompt = f"{SYSTEM_PROMPT}\n\n{request.prompt}" if SYSTEM_PROMPT else request.prompt
         session_data[request.session_id] = True
     else:
         full_prompt = request.prompt
+        logger.debug("Existing session: %s", request.session_id)
 
     def send_and_get():
         provider.send_prompt(full_prompt)
         return provider.get_response()
 
-    response = await loop.run_in_executor(_provider_executor, send_and_get)
-    thinking, answer, commands = _extract_response(response, request.session_id)
-    return ChatResponse(thinking=thinking, answer=answer, commands=commands)
+    try:
+        response = await loop.run_in_executor(_provider_executor, send_and_get)
+        thinking, answer, commands = _extract_response(response, request.session_id)
+        logger.info("Chat completed for session %s, commands=%d", request.session_id, len(commands))
+        return ChatResponse(thinking=thinking, answer=answer, commands=commands)
+    except Exception as e:
+        logger.exception("Error during chat processing for session %s", request.session_id)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
+
+@app.post("/api/ai-feedback", response_model=AIFeedbackResponse)
+async def ai_feedback(request: AIFeedbackRequest):
+    logger.info("AI feedback request received")
+    if not provider:
+        logger.error("Provider not initialized")
+        return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
+
+    loop = asyncio.get_running_loop()
+
+    def send_wrapped_and_get():
+        if request.commands:
+            wrapped = build_wrapped_commands_output(request.commands)
+        else:
+            wrapped = build_wrapped_command_output(
+                request.command, request.exit_code, request.stdout, request.stderr
+            )
+        provider.send_prompt(wrapped)
+        return provider.get_response()
+
+    try:
+        ai_response = await loop.run_in_executor(_provider_executor, send_wrapped_and_get)
+        thinking, answer, commands = _extract_response(ai_response)
+        logger.info("AI feedback processed, commands=%d", len(commands))
+        return AIFeedbackResponse(
+            thinking=thinking,
+            answer=answer,
+            commands=commands,
+        )
+    except Exception as e:
+        logger.exception("Error during AI feedback processing")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# =============================================================================
+# WebSocket Endpoint
+# =============================================================================
 
 @app.websocket("/ws/execute")
 async def websocket_execute(websocket: WebSocket):
     await websocket.accept()
-    print("[WebSocket] Connection accepted")  # <-- NEW: log successful handshake
+    logger.info("WebSocket connection accepted")
 
-    init_msg = await websocket.receive_text()
-    print(f"[WebSocket] Received init: {init_msg[:200]}")
+    try:
+        init_msg = await websocket.receive_text()
+        logger.debug("WebSocket init message received: %s", init_msg[:200])
+    except Exception as e:
+        logger.error("Failed to receive init message: %s", e)
+        await websocket.close(code=4000, reason="Init message missing")
+        return
+
     try:
         cmd_data = json.loads(init_msg)
         command = cmd_data.get("command", "")
         session_id = cmd_data.get("session_id", "default")
-    except Exception as e:
-        print(f"[WebSocket] Invalid JSON: {e}")
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON in init message: %s", e)
         await websocket.close(code=4000, reason="Invalid JSON")
         return
 
     if not command:
-        print("[WebSocket] No command provided")
+        logger.warning("WebSocket connection closed: no command provided")
         await websocket.close(code=4000, reason="No command provided")
         return
 
-    print(f"[WebSocket] Evaluating command: {command[:100]}...")
+    logger.info("WebSocket command evaluation: session=%s, command=%s", session_id, command[:100])
 
+    # Security evaluation
     decision, info = guard.evaluate(command, session_id)
-    # Treat both "ask" and "deny" as needing user approval
     if decision in ("ask", "deny"):
         severity = "unsafe" if decision == "deny" else "unsure"
+        logger.info("Command requires user approval: %s (severity=%s)", command[:50], severity)
         await websocket.send_text(json.dumps({
             "type": "ask",
             "command": command,
@@ -231,18 +373,20 @@ async def websocket_execute(websocket: WebSocket):
                 guard.approve_once(command, path)
                 if action == "allow_session":
                     guard.approve_session(command, path)
+                logger.info("Command approved by user: action=%s", action)
             else:
+                logger.warning("Command denied by user")
                 await websocket.send_text(json.dumps({"type": "denied", "reason": "User denied"}))
                 await websocket.close(code=4000, reason="Denied by user")
                 return
         except Exception as e:
-            print(f"[WebSocket] Approval error: {e}")
+            logger.error("Approval error: %s", e)
             await websocket.send_text(json.dumps({"type": "denied", "reason": "Approval error"}))
             await websocket.close(code=4000, reason="Approval error")
             return
-    # If decision == "allow", proceed normally
-    print(f"[WebSocket] Running: {command[:100]}...")
 
+    # Execute command in pseudo-terminal
+    logger.info("Forking PTY for command: %s", command[:100])
     pid, master_fd = pty.fork()
     if pid == 0:
         try:
@@ -252,7 +396,7 @@ async def websocket_execute(websocket: WebSocket):
         os.execvp("/bin/sh", ["/bin/sh", "-c", command])
         os._exit(1)
 
-    print(f"[WebSocket] Forked child PID: {pid}")
+    logger.debug("Forked child PID: %d", pid)
 
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -269,7 +413,7 @@ async def websocket_execute(websocket: WebSocket):
             if data:
                 reader_queue.put_nowait(data)
             else:
-                reader_queue.put_nowait(None)  # EOF
+                reader_queue.put_nowait(None)
         except (OSError, BlockingIOError):
             pass
 
@@ -279,7 +423,7 @@ async def websocket_execute(websocket: WebSocket):
         nonlocal exit_status
         _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
         exit_status = os.waitstatus_to_exitcode(status)
-        print(f"[WebSocket] Process {pid} exited with status {exit_status}")
+        logger.info("Process %d exited with status %d", pid, exit_status)
         return exit_status
 
     async def read_pty():
@@ -287,7 +431,7 @@ async def websocket_execute(websocket: WebSocket):
         while True:
             data = await reader_queue.get()
             if data is None:
-                print("[WebSocket] Reader received EOF, exiting")
+                logger.debug("Reader received EOF")
                 break
             chunk_size = len(data)
             if total_bytes + chunk_size > MAX_WEBSOCKET_OUTPUT_BYTES:
@@ -300,6 +444,7 @@ async def websocket_execute(websocket: WebSocket):
                 warning = b"\n[OUTPUT TRUNCATED: Exceeded 150 KB limit]\n"
                 output_chunks.append(warning)
                 await websocket.send_bytes(warning)
+                logger.warning("Output truncated for command %s", command[:50])
                 break
             else:
                 output_chunks.append(data)
@@ -327,14 +472,14 @@ async def websocket_execute(websocket: WebSocket):
                             winsize = struct.pack("HHHH", rows, cols, 0, 0)
                             fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
                         except OSError as e:
-                            print(f"Resize error: {e}")
+                            logger.error("Resize error: %s", e)
                     elif obj.get("type") == "signal":
                         sig = getattr(signal, obj.get("signal", ""), None)
                         if sig and pid > 0:
                             try:
                                 os.killpg(pid, sig)
-                            except OSError:
-                                pass
+                            except OSError as e:
+                                logger.error("Signal error: %s", e)
                     elif obj.get("type") == "stdin":
                         try:
                             os.write(master_fd, obj["data"].encode())
@@ -346,7 +491,7 @@ async def websocket_execute(websocket: WebSocket):
                     except OSError:
                         break
         except WebSocketDisconnect:
-            print("[WebSocket] Client disconnected during write")
+            logger.info("Client disconnected during write")
 
     reader_task = asyncio.create_task(read_pty())
     writer_task = asyncio.create_task(write_ws_to_pty())
@@ -365,7 +510,7 @@ async def websocket_execute(websocket: WebSocket):
     writer_task.cancel()
 
     final_output = b"".join(output_chunks).decode(errors="replace")
-    print(f"[WebSocket] Sending exit message with code {exit_status}")
+    logger.info("Sending exit message with code %d", exit_status if exit_status is not None else -1)
     await websocket.send_text(json.dumps({
         "type": "exit",
         "code": exit_status if exit_status is not None else -1,
@@ -376,31 +521,5 @@ async def websocket_execute(websocket: WebSocket):
 
     try:
         os.close(master_fd)
-    except OSError:
-        pass
-
-
-@app.post("/api/ai-feedback", response_model=AIFeedbackResponse)
-async def ai_feedback(request: AIFeedbackRequest):
-    if not provider:
-        return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
-
-    loop = asyncio.get_running_loop()
-
-    def send_wrapped_and_get():
-        if request.commands:
-            wrapped = build_wrapped_commands_output(request.commands)
-        else:
-            wrapped = build_wrapped_command_output(
-                request.command, request.exit_code, request.stdout, request.stderr
-            )
-        provider.send_prompt(wrapped)
-        return provider.get_response()
-
-    ai_response = await loop.run_in_executor(_provider_executor, send_wrapped_and_get)
-    thinking, answer, commands = _extract_response(ai_response)
-    return AIFeedbackResponse(
-        thinking=thinking,
-        answer=answer,
-        commands=commands,
-    )
+    except OSError as e:
+        logger.error("Error closing master fd: %s", e)

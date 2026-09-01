@@ -1,10 +1,13 @@
 import time
 import re
 import base64
+import logging
 from markdownify import markdownify as md
 from src.ai.provider import AIProvider
 from src.browser.manager import BrowserManager
 from src.browser.observer import DOMObserver
+
+logger = logging.getLogger(__name__)
 
 
 class DeepSeekProvider(AIProvider):
@@ -15,26 +18,27 @@ class DeepSeekProvider(AIProvider):
         self.observer = None
 
     def connect(self):
-        print("[DeepSeek] Connecting...")
+        logger.info("Connecting to DeepSeek...")
         self.page = self.browser.launch()
 
         # If the page was reused, it might already be on DeepSeek, but we ensure it
         if "chat.deepseek.com" not in self.page.url:
+            logger.debug("Navigating to DeepSeek chat page")
             self.page.goto("https://chat.deepseek.com")
             self.page.wait_for_load_state("networkidle")
 
         self.observer = DOMObserver(self.page)
         self.observer.start()
 
-        print("[DeepSeek] Connected")
+        logger.info("DeepSeek connected successfully")
 
     def _ensure_page(self):
         """Check if the page is still alive; if not, reconnect."""
         try:
             self.page.evaluate("1")
         except Exception as e:
-            print(f"[DeepSeek] Page is closed or unresponsive: {e}")
-            print("[DeepSeek] Attempting to reconnect...")
+            logger.warning("Page is closed or unresponsive: %s", e)
+            logger.info("Attempting to reconnect...")
             try:
                 self.browser.close()
             except Exception:
@@ -45,7 +49,7 @@ class DeepSeekProvider(AIProvider):
     def send_prompt(self, prompt):
         self._ensure_page()
 
-        print("[DeepSeek] Injecting prompt...")
+        logger.info("Injecting prompt...")
 
         for attempt in range(3):
             try:
@@ -57,8 +61,9 @@ class DeepSeekProvider(AIProvider):
                 break
             except Exception as e:
                 if attempt == 2:
+                    logger.error("DeepSeek input not found after retries")
                     raise Exception("DeepSeek input not found after retries") from e
-                print(f"[DeepSeek] Textarea not ready, retrying ({attempt+1}/3)...")
+                logger.warning("Textarea not ready, retrying (%d/3)...", attempt + 1)
                 time.sleep(1)
 
         self.page.fill('textarea[placeholder="Message DSeek"]', prompt)
@@ -78,20 +83,20 @@ class DeepSeekProvider(AIProvider):
             self.page.click(
                 'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
             )
-            print("[DeepSeek] Sent via button click")
+            logger.info("Prompt sent via button click")
         except Exception as e:
-            print(f"[DeepSeek] Button click failed, falling back to Enter key: {e}")
+            logger.warning("Button click failed, falling back to Enter key: %s", e)
             self.page.keyboard.press("Enter")
-            print("[DeepSeek] Sent via Enter key")
+            logger.info("Prompt sent via Enter key")
 
     def _click_send(self):
-        print("[DeepSeek] Clicking send...")
+        logger.info("Clicking send button...")
         button = self.page.locator(
             'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
         ).last
         button.wait_for(timeout=5000)
         button.click()
-        print("[DeepSeek] Sent")
+        logger.info("Send button clicked")
 
     def _inject_retry_observer(self):
         self.page.evaluate("""
@@ -113,9 +118,10 @@ class DeepSeekProvider(AIProvider):
                 window.__autonect_retry_observer = observer;
             }
         """)
+        logger.debug("Retry observer injected")
 
     def _wait_for_response(self):
-        print("[DeepSeek] Waiting for response (retry observer active) ...")
+        logger.info("Waiting for response (retry observer active)...")
         self._inject_retry_observer()
 
         self.page.evaluate("""
@@ -148,13 +154,14 @@ class DeepSeekProvider(AIProvider):
                 timeout=180000
             )
         except Exception:
+            logger.error("DeepSeek response timeout")
             raise TimeoutError("DeepSeek response timeout")
 
-        print("[DeepSeek] Response finished")
+        logger.info("Response finished")
 
     def get_response(self):
         self._wait_for_response()
-        print("[DeepSeek] Extracting response...")
+        logger.info("Extracting response...")
 
         thinking_text = self.page.evaluate("""
             () => {
@@ -189,7 +196,7 @@ class DeepSeekProvider(AIProvider):
                     codeBlocks.push({ idx, lang, code });
 
                     const placeholder = document.createTextNode(
-                        `\n\nCODEBLOCKPLACEHOLDER${idx}\n\n`
+                        `\\n\\nCODEBLOCKPLACEHOLDER${idx}\\n\\n`
                     );
                     block.parentNode.replaceChild(placeholder, block);
                 });
@@ -285,7 +292,7 @@ class DeepSeekProvider(AIProvider):
 
         markdown = markdown.strip()
 
-        print("[DeepSeek] Extraction complete")
+        logger.info("Extraction complete")
         return {
             "thinking": thinking_text,
             "answer": markdown,
@@ -293,4 +300,6 @@ class DeepSeekProvider(AIProvider):
         }
 
     def close(self):
+        logger.info("Closing DeepSeek provider...")
         self.browser.close()
+        logger.info("DeepSeek provider closed")
