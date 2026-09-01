@@ -14,6 +14,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import logging
 from logging.config import dictConfig
+import subprocess
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -171,6 +172,10 @@ class AIFeedbackResponse(BaseModel):
     commands: list[dict] = []
 
 
+class OpenTerminalRequest(BaseModel):
+    command: str
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -316,6 +321,39 @@ async def ai_feedback(request: AIFeedbackRequest):
     except Exception as e:
         logger.exception("Error during AI feedback processing")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/open-terminal")
+async def open_terminal(request: OpenTerminalRequest):
+    """
+    Open a native terminal (Konsole) with the given command.
+    The command will be run in a bash shell that stays open after execution.
+    """
+    command = request.command
+    logger.info("Opening native terminal for command: %s", command[:100])
+
+    # Build the full command: konsole -e bash -c "your command; exec bash"
+    # This keeps the terminal open after the command finishes.
+    full_cmd = ["konsole", "-e", "bash", "-c", f"{command}; exec bash"]
+
+    try:
+        # Launch the process in the background, detached from the server.
+        # We use subprocess.Popen with start_new_session=True to avoid zombie processes.
+        subprocess.Popen(full_cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info("Konsole launched successfully")
+        return JSONResponse(content={"status": "success", "message": "Terminal opened"})
+    except FileNotFoundError:
+        logger.error("Konsole not found. Is it installed?")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Konsole not found. Please install konsole."}
+        )
+    except Exception as e:
+        logger.exception("Failed to launch terminal")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to launch terminal: {str(e)}"}
+        )
 
 
 # =============================================================================

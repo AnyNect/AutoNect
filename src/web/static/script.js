@@ -1,15 +1,43 @@
+/* ── Logger ── */
+const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+let currentLogLevel = LOG_LEVELS.INFO;
+
+const logger = {
+  setLevel(level) {
+    if (LOG_LEVELS[level] !== undefined) currentLogLevel = LOG_LEVELS[level];
+  },
+  _log(level, ...args) {
+    if (LOG_LEVELS[level] < currentLogLevel) return;
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}] [${level}]`;
+    switch (level) {
+      case 'DEBUG': console.debug(prefix, ...args); break;
+      case 'INFO':  console.info(prefix, ...args); break;
+      case 'WARN':  console.warn(prefix, ...args); break;
+      case 'ERROR': console.error(prefix, ...args); break;
+    }
+  },
+  debug(...args) { this._log('DEBUG', ...args); },
+  info(...args)  { this._log('INFO', ...args); },
+  warn(...args)  { this._log('WARN', ...args); },
+  error(...args) { this._log('ERROR', ...args); }
+};
+window.__logger = logger;
+
 /* ── Chat state ── */
 const chatArea = document.getElementById('chat-area');
 const chatContainer = document.getElementById('chat-container');
 const promptInput = document.getElementById('prompt');
 const sendBtn = document.getElementById('send-btn');
 const sessionId = crypto.randomUUID ?
-crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
+  crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
+
+logger.info('Chat session started', { sessionId });
 
 let animationActive = false;
 let autoAllowEnabled = false;
 let activeCommandGroup = null;
-let isProcessing = false;          // true when AI is generating
+let isProcessing = false;
 
 /* ── Queue state ── */
 const queueBubble = document.getElementById('queue-bubble');
@@ -21,22 +49,24 @@ let isPaused = false;
 let editingIndex = null;
 let taskQueue = [];
 
-/* ── Syntax Highlighting (VS Code style via highlight.js) ── */
+/* ── Auto‑Allow command execution queue ── */
+let commandExecutionQueue = [];
+let isCommandExecuting = false;
+
+/* ── Syntax Highlighting ── */
 marked.setOptions({
     highlight: function(code, lang) {
         if (lang && hljs.getLanguage(lang)) {
             try {
                 return hljs.highlight(code, { language: lang }).value;
             } catch (e) {
-                // fall through to auto
+                logger.debug('Highlight error for language', lang, e);
             }
         }
         if (lang !== 'command') {
             try {
                 return hljs.highlightAuto(code).value;
-            } catch (e) {
-                // no-op
-            }
+            } catch (e) { /* no-op */ }
         }
         return code;
     }
@@ -45,67 +75,64 @@ marked.setOptions({
 /* ═══════════════════════════════════════════════════════════════
    Input helpers
    ═══════════════════════════════════════════════════════════════ */
-
 function autoResize(textarea) {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
     sendBtn.disabled = !textarea.value.trim();
 }
-
 function autoResizeEdit(textarea) {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
 }
-
 function handleKeyDown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         handleSend();
     }
 }
-
 function scrollToBottom() {
     chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Queue logic
+   Queue logic (task queue)
    ═══════════════════════════════════════════════════════════════ */
-
 function toggleQueueBubble() {
     queueBubble.classList.toggle('expanded');
+    logger.debug('Queue bubble toggled');
 }
-
 function togglePauseQueue(event) {
     event.stopPropagation();
     isPaused = !isPaused;
     if (isPaused) {
         pauseBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><span>Resume</span>`;
         queueBadge.classList.add('paused');
+        logger.info('Queue paused');
     } else {
         pauseBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg><span>Pause</span>`;
         queueBadge.classList.remove('paused');
-        if (!isProcessing && taskQueue.length > 0) processNextQueueTask();
+        if (!isProcessing && taskQueue.length > 0) {
+            logger.info('Queue resumed, processing next task');
+            processNextQueueTask();
+        }
     }
     renderQueue();
 }
-
 function handleSend() {
     const text = promptInput.value.trim();
     if (!text) return;
-
     promptInput.value = '';
     promptInput.style.height = 'auto';
     sendBtn.disabled = true;
-
     if (!isProcessing && !isPaused) {
+        logger.info('Sending prompt directly', { prompt: text.substring(0, 50) });
         executeTask(text);
     } else {
+        logger.info('Queuing prompt', { prompt: text.substring(0, 50) });
         taskQueue.push(text);
         renderQueue();
     }
 }
-
 function executeTask(promptText) {
     isProcessing = true;
     addMessage('user', promptText);
@@ -115,9 +142,9 @@ function executeTask(promptText) {
         processNextQueueTask();
     });
 }
-
 async function sendToAI(promptText) {
     try {
+        logger.debug('Sending to AI', { sessionId, prompt: promptText.substring(0, 50) });
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -125,9 +152,11 @@ async function sendToAI(promptText) {
         });
         if (!response.ok) throw new Error('Server returned ' + response.status);
         const data = await response.json();
+        logger.info('AI response received', { commands: data.commands?.length || 0 });
         removeLoading();
         addMessage('assistant', data.answer, data.thinking, data.commands);
     } catch (error) {
+        logger.error('AI request failed', error);
         removeLoading();
         const errorDiv = document.createElement('div');
         errorDiv.className = 'message-row assistant';
@@ -139,17 +168,15 @@ async function sendToAI(promptText) {
         scrollToBottom();
     }
 }
-
 function processNextQueueTask() {
     if (!isPaused && taskQueue.length > 0) {
         const nextPrompt = taskQueue.shift();
+        logger.debug('Processing next queue task', { prompt: nextPrompt.substring(0, 30) });
         renderQueue();
         executeTask(nextPrompt);
     }
 }
-
 /* ── Queue editing ── */
-
 function enableEdit(index, event) {
     if (event) event.stopPropagation();
     editingIndex = index;
@@ -158,33 +185,30 @@ function enableEdit(index, event) {
         const editField = document.getElementById(`edit-field-${index}`);
         if (editField) { editField.focus(); autoResizeEdit(editField); editField.select(); }
     }, 50);
+    logger.debug('Editing queue item', { index });
 }
-
 function saveEdit(index, event) {
     if (event) event.stopPropagation();
     const editField = document.getElementById(`edit-field-${index}`);
     if (editField && editField.value.trim()) taskQueue[index] = editField.value.trim();
     editingIndex = null;
     renderQueue();
+    logger.debug('Queue item saved', { index });
 }
-
 function handleEditKeyDown(event, index) {
     if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveEdit(index, event);
     } else if (event.key === 'Escape') { editingIndex = null; renderQueue();
     }
 }
-
 function removeTask(index, event) {
     if (event) event.stopPropagation();
     taskQueue.splice(index, 1);
     if (editingIndex === index) editingIndex = null;
     renderQueue();
+    logger.debug('Queue item removed', { index });
 }
-
 /* ── Drag-and-drop ── */
-
 let activeDrag = null;
-
 function startPointerDrag(event) {
     if (event.target.closest('button') || event.target.closest('textarea') || editingIndex !== null) return;
     const itemEl = event.currentTarget;
@@ -198,8 +222,8 @@ function startPointerDrag(event) {
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', onPointerUp);
+    logger.debug('Drag started', { initialIndex });
 }
-
 function onPointerMove(event) {
     if (!activeDrag) return;
     const { itemEl, initialIndex, startY, itemHeight, items } = activeDrag;
@@ -225,7 +249,6 @@ function onPointerMove(event) {
         });
     }
 }
-
 function onPointerUp(event) {
     if (!activeDrag) return;
     window.removeEventListener('pointermove', onPointerMove);
@@ -237,6 +260,7 @@ function onPointerUp(event) {
         } catch (e) {}
         itemEl.classList.remove('dragging');
         if (initialIndex !== currentTargetIndex) {
+            logger.debug('Queue item reordered', { from: initialIndex, to: currentTargetIndex });
             const movedItem = taskQueue.splice(initialIndex, 1)[0];
             taskQueue.splice(currentTargetIndex, 0, movedItem);
             const targetNode = items[currentTargetIndex];
@@ -250,7 +274,6 @@ function onPointerUp(event) {
     }
     activeDrag = null;
 }
-
 function renderQueue() {
     if (taskQueue.length === 0) { queueBubble.style.display = 'none'; return;
     }
@@ -276,13 +299,11 @@ function renderQueue() {
 /* ═══════════════════════════════════════════════════════════════
    Chat messages
    ═══════════════════════════════════════════════════════════════ */
-
 function addMessage(role, content, thinking = '', commands = []) {
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
-    
     if (thinking && role === 'assistant') {
         const details = document.createElement('details');
         details.className = 'thinking-block';
@@ -293,22 +314,18 @@ function addMessage(role, content, thinking = '', commands = []) {
         details.appendChild(thinkingContent);
         contentDiv.appendChild(details);
     }
-
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-
     if (role === 'assistant') {
         bubble.innerHTML = marked.parse(content);
-        // Apply Highlight.js to any code blocks that were injected as raw HTML
         bubble.querySelectorAll('pre code[class*="language-"]').forEach((codeEl) => {
             if (codeEl.closest('.command-section')) return;
             hljs.highlightElement(codeEl);
             const pre = codeEl.closest('pre');
             if (pre) pre.style.color = '';
         });
-        
-        // INLINE COMMAND CARDS: Replace matching <pre> blocks dynamically
         if (commands && commands.length > 0) {
+            logger.debug('Adding command cards', { count: commands.length });
             const group = {
                 total: commands.length,
                 completed: 0,
@@ -319,16 +336,12 @@ function addMessage(role, content, thinking = '', commands = []) {
             activeCommandGroup = group;
             let remainingCommands = [...commands];
             const preBlocks = bubble.querySelectorAll('pre');
-            
             preBlocks.forEach((preEl) => {
                 const codeEl = preEl.querySelector('code');
                 if (!codeEl) return;
-
                 const codeText = codeEl.textContent.trim();
                 const isCommandClass = codeEl.className.includes('command') || codeEl.className.includes('language-command');
-
                 const matchIndex = remainingCommands.findIndex(cmd => cmd.code.trim() === codeText);
-
                 if (matchIndex !== -1) {
                     const cmd = remainingCommands[matchIndex];
                     const cmdSection = createCommandSection([cmd], group);
@@ -341,16 +354,15 @@ function addMessage(role, content, thinking = '', commands = []) {
                     remainingCommands.shift();
                 }
             });
-            
             if (remainingCommands.length > 0) {
                 const fallbackSection = createCommandSection(remainingCommands, group);
                 bubble.appendChild(fallbackSection);
+                logger.debug('Added fallback command cards', { count: remainingCommands.length });
             }
         }
     } else {
         bubble.textContent = content;
     }
-
     contentDiv.appendChild(bubble);
     row.appendChild(contentDiv);
     chatArea.appendChild(row);
@@ -358,23 +370,37 @@ function addMessage(role, content, thinking = '', commands = []) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Command cards
+   Command cards & Auto‑Allow queue
    ═══════════════════════════════════════════════════════════════ */
+
+function updateCardStatus(card, statusText, color) {
+    const title = card.querySelector('.command-header-title');
+    const dot = card.querySelector('.status-dot');
+    if (title) {
+        title.textContent = statusText;
+        title.style.color = color;
+    }
+    if (dot) dot.style.backgroundColor = color;
+}
+
+function processCommandQueue() {
+    if (isCommandExecuting || commandExecutionQueue.length === 0) return;
+    isCommandExecuting = true;
+    const card = commandExecutionQueue.shift();
+    updateCardStatus(card, 'EXECUTING…', 'var(--text-sub)');
+    handleAllow(card, () => {
+        isCommandExecuting = false;
+        if (commandExecutionQueue.length > 0) {
+            processCommandQueue();
+        }
+    });
+}
 
 function toggleCommandCard(headerElem) {
     const card = headerElem.closest('.command-card');
     card.classList.toggle('expanded');
     updateCommandCardTitle(card);
-
-    // Fit only columns to prevent vertical expansion glitches
-    if (card.classList.contains('expanded') && card._term) {
-        setTimeout(() => {
-            if (card._fitAddon) {
-                const dims = card._fitAddon.proposeDimensions();
-                if (dims) card._term.resize(dims.cols, card._term.rows);
-            }
-        }, 50);
-    }
+    logger.debug('Command card toggled', { expanded: card.classList.contains('expanded') });
 }
 
 function updateCommandCardTitle(card) {
@@ -383,7 +409,6 @@ function updateCommandCardTitle(card) {
     const statusText = card.dataset.statusText || 'PENDING APPROVAL';
     const statusColor = card.dataset.statusColor || 'var(--color-pending)';
     const commandText = card.dataset.commandText || '';
-    
     if (isExpanded) {
         titleElem.style.color = statusColor;
         updateHeaderTitleSmooth(titleElem, statusText, false);
@@ -408,7 +433,6 @@ function updateHeaderTitleSmooth(titleElem, newText, isCommand) {
     }, 180);
 }
 
-// ── Safety tag (only three states) ──
 function getCommandSafetyTag(safety) {
     switch (safety) {
         case 'deny': return { text: 'UNSAFE', class: 'cmd-tag-unsafe' };
@@ -429,7 +453,7 @@ function toggleAutoAllow() {
         if (onIcon) onIcon.style.display = autoAllowEnabled ? 'block' : 'none';
         btn.title = autoAllowEnabled ? 'Disable Auto-Allow' : 'Enable Auto-Allow';
     }
-    console.log('Auto-Allow enabled:', autoAllowEnabled);
+    logger.info('Auto-Allow toggled', { enabled: autoAllowEnabled });
 }
 
 function createCommandSection(commands, group = null) {
@@ -441,7 +465,6 @@ function createCommandSection(commands, group = null) {
         const card = document.createElement('div');
         card.className = 'command-card expanded';
         card.dataset.command = commandCode;
-
         card.dataset.commandText = commandCode;
         card.dataset.statusText = 'PENDING APPROVAL';
         card.dataset.statusColor = 'var(--color-pending)';
@@ -493,14 +516,28 @@ function createCommandSection(commands, group = null) {
         outputArea.className = 'command-output-area';
         outputArea.innerHTML = '<div class="progress-bar"></div>';
         
+        // ── Button handlers ──
         declineBtn.onclick = (e) => { e.stopPropagation(); handleDecline(card); };
-        allowBtn.onclick = (e) => { e.stopPropagation(); handleAllow(card); };
-        terminalBtn.onclick = (e) => { e.stopPropagation(); openTerminalModal(commandCode); };
         
-        // Auto-Allow/Deny logic – corrected structure
+        allowBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (autoAllowEnabled) {
+                // Enqueue the command
+                updateCardStatus(card, 'QUEUED', 'var(--color-warning)');
+                commandExecutionQueue.push(card);
+                if (!isCommandExecuting) processCommandQueue();
+            } else {
+                handleAllow(card);
+            }
+        };
+        
+        terminalBtn.onclick = (e) => { e.stopPropagation(); openNativeTerminal(commandCode); };
+
+        // ── Auto‑Allow logic ──
         if (autoAllowEnabled) {
-            if (safety === 'allow') {
-                setTimeout(() => handleAllow(card), 100);
+            if (safety === 'deny') {
+                setTimeout(() => handleDecline(card), 100);
+                logger.debug('Auto-deny triggered for unsafe command', { command: commandCode.substring(0, 30) });
             } else if (safety === 'warn') {
                 let countdown = 5;
                 const timerEl = document.createElement('span');
@@ -513,28 +550,21 @@ function createCommandSection(commands, group = null) {
                     if (countdown <= 0) {
                         clearInterval(timer);
                         if (timerEl.parentNode) timerEl.remove();
-                        handleAllow(card);
+                        // Enqueue instead of directly executing
+                        updateCardStatus(card, 'QUEUED', 'var(--color-warning)');
+                        commandExecutionQueue.push(card);
+                        if (!isCommandExecuting) processCommandQueue();
                     }
                 }, 1000);
                 card._autoAllowTimer = timer;
                 card._autoAllowTimerEl = timerEl;
-            } else if (safety === 'deny') {
-                let countdown = 5;
-                const timerEl = document.createElement('span');
-                timerEl.className = 'auto-deny-countdown';
-                timerEl.textContent = `Auto-Denying in ${countdown}s...`;
-                body.appendChild(timerEl);
-                const timer = setInterval(() => {
-                    countdown--;
-                    timerEl.textContent = `Auto-Denying in ${countdown}s...`;
-                    if (countdown <= 0) {
-                        clearInterval(timer);
-                        if (timerEl.parentNode) timerEl.remove();
-                        handleDecline(card);
-                    }
-                }, 1000);
-                card._autoAllowTimer = timer;
-                card._autoAllowTimerEl = timerEl;
+            } else if (safety === 'allow') {
+                setTimeout(() => {
+                    updateCardStatus(card, 'QUEUED', 'var(--color-warning)');
+                    commandExecutionQueue.push(card);
+                    if (!isCommandExecuting) processCommandQueue();
+                }, 100);
+                logger.debug('Auto-allow triggered for safe command', { command: commandCode.substring(0, 30) });
             }
         }
 
@@ -545,14 +575,33 @@ function createCommandSection(commands, group = null) {
         card.appendChild(header);
         card.appendChild(bodyWrapper);
         cmdSection.appendChild(card);
-        // Force reflow to ensure initial grid layout is calculated correctly
         void card.offsetHeight;
     });
     return cmdSection;
 }
 
+async function openNativeTerminal(command) {
+    logger.info('Opening native terminal', { command: command.substring(0, 50) });
+    try {
+        const response = await fetch('/api/open-terminal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: command }),
+        });
+        if (!response.ok) {
+            throw new Error('Server returned ' + response.status);
+        }
+        const data = await response.json();
+        logger.info('Terminal opened successfully', data);
+    } catch (error) {
+        logger.error('Failed to open native terminal', error);
+        alert('Failed to open terminal: ' + error.message);
+    }
+}
+
 async function sendBatchFeedback(outputs) {
     try {
+        logger.debug('Sending batch feedback', { count: outputs.length });
         const fbResponse = await fetch('/api/ai-feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -561,8 +610,13 @@ async function sendBatchFeedback(outputs) {
         if (fbResponse.ok) {
             const fbData = await fbResponse.json();
             if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+            logger.info('Batch feedback processed', { commands: fbData.commands?.length || 0 });
+        } else {
+            logger.warn('Batch feedback server error', { status: fbResponse.status });
         }
-    } catch (fbError) { console.error('AI feedback failed:', fbError); }
+    } catch (fbError) {
+        logger.error('Batch feedback failed', fbError);
+    }
 }
 
 function handleDecline(card) {
@@ -590,8 +644,8 @@ function handleDecline(card) {
     titleElem.style.color = activeColor;
     card.classList.remove('expanded');
     updateCommandCardTitle(card);
+    logger.warn('Command declined', { command: commandStr.substring(0, 30) });
     
-    // Batch group logic for declined commands
     if (card._group) {
         const group = card._group;
         group.outputs.push({ command: commandStr, stdout: '', stderr: 'Declined by user', exit_code: -1 });
@@ -604,7 +658,7 @@ function handleDecline(card) {
     }
 }
 
-async function handleAllow(card) {
+async function handleAllow(card, onComplete = null) {
     if (card._autoAllowTimer) {
         clearInterval(card._autoAllowTimer);
         if (card._autoAllowTimerEl) card._autoAllowTimerEl.remove();
@@ -622,7 +676,6 @@ async function handleAllow(card) {
     if (btnRow) btnRow.remove();
     if (pulseRing) pulseRing.remove();
 
-    // Prepare clean wrapper
     outputArea.innerHTML = '';
     const terminalContainer = document.createElement('div');
     terminalContainer.className = 'terminal-container active';
@@ -631,14 +684,13 @@ async function handleAllow(card) {
     titleElem.style.color = 'var(--text-sub)';
     updateHeaderTitleSmooth(titleElem, 'EXECUTING…', false);
 
-    // CRITICAL: Construct strictly isolated xterm environment
     const term = new Terminal({
         cursorBlink: true,
         cursorStyle: 'bar',
         fontFamily: 'var(--font-mono)',
         fontSize: 13,
         lineHeight: 1.2,
-        rows: 1,  // FORCE to exactly 1 row initially
+        rows: 1,
         cols: 80,
         scrollback: 1000,
         theme: {
@@ -669,14 +721,11 @@ async function handleAllow(card) {
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
-
     term.open(terminalContainer);
-    
-    // Fit columns natively, lock rows precisely to 1 to dodge height layout glitches
     const dims = fitAddon.proposeDimensions();
     term.resize(dims ? dims.cols : 80, 1);
 
-    const maxRows = 20; // Set the maximum height before internal scrolling kicks in
+    const maxRows = 20;
     term.onLineFeed(() => {
         const buffer = term.buffer.active;
         const contentRows = buffer.baseY + buffer.cursorY + 1;
@@ -691,14 +740,15 @@ async function handleAllow(card) {
     card._terminalContainer = terminalContainer;
     card._isExecuting = true;
 
-    // Connect to WebSocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/execute`;
     const ws = new WebSocket(wsUrl);
     card._ws = ws;
+    logger.debug('WebSocket connecting', { url: wsUrl });
     
     ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'exec', command: commandStr }));
+        logger.info('WebSocket opened, command sent', { command: commandStr.substring(0, 30) });
     };
     
     let collectedOutput = '';
@@ -709,22 +759,12 @@ async function handleAllow(card) {
             const reader = new FileReader();
             reader.onload = () => {
                 const bytes = new Uint8Array(reader.result);
-let messageQueue = [];
-let isCommandPending = false;
-
-                // Use a callback to evaluate state AFTER xterm parses stdout chunk
                 term.write(bytes, () => {
                     collectedOutput += new TextDecoder().decode(bytes);
-                    
-                    // Directly calculate rows off of visual cursor baseline + actual cursor position
                     const buffer = term.buffer.active;
                     const actualLines = buffer.baseY + buffer.cursorY + 1;
-                    
-                    // Clamp dimensions for responsive shrink-wrapping up to ~400px (22 rows)
                     const targetRows = Math.min(22, Math.max(1, actualLines));
                     const currentCols = fitAddon.proposeDimensions()?.cols || term.cols || 80;
-                    
-                    // Apply strictly to xterm configuration 
                     if (term.rows !== targetRows || term.cols !== currentCols) {
                         term.resize(currentCols, targetRows);
                     }
@@ -737,13 +777,17 @@ let isCommandPending = false;
                 exitCode = msg.code;
                 if (msg.output) collectedOutput = msg.output;
                 ws.close();
+                logger.info('Command exited', { exitCode, outputLength: collectedOutput.length });
             } else if (msg.type === 'error') {
                 term.writeln('\r\n\x1b[31m' + msg.message + '\x1b[0m');
+                logger.error('WebSocket error message', msg);
                 ws.close();
             } else if (msg.type === 'warning') {
                 term.writeln('\r\n\x1b[33m⚠ ' + msg.message + '\x1b[0m');
+                logger.warn('WebSocket warning', msg);
             } else if (msg.type === 'ask') {
                 ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
+                logger.debug('Auto-approved permission request');
             }
         }
     };
@@ -757,7 +801,6 @@ let isCommandPending = false;
         terminalContainer.classList.remove('active');
         terminalContainer.classList.add('readonly');
 
-        // Do one final resize explicitly wrapped to true end buffer coordinates
         const buffer = term.buffer.active;
         const actualLines = buffer.baseY + buffer.cursorY + 1;
         const targetRows = Math.min(22, Math.max(1, actualLines));
@@ -786,6 +829,7 @@ let isCommandPending = false;
 
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
+                logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code });
                 const fbResponse = await fetch('/api/ai-feedback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -794,8 +838,13 @@ let isCommandPending = false;
                 if (fbResponse.ok) {
                     const fbData = await fbResponse.json();
                     if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+                    logger.info('Single feedback processed');
+                } else {
+                    logger.warn('Single feedback server error', { status: fbResponse.status });
                 }
-            } catch (fbError) { console.error('AI feedback failed:', fbError); }
+            } catch (fbError) {
+                logger.error('Single feedback failed', fbError);
+            }
         };
 
         if (card._group) {
@@ -814,10 +863,14 @@ let isCommandPending = false;
         isProcessing = false;
         sendBtn.disabled = !promptInput.value.trim();
         processNextQueueTask();
+
+        // Call the completion callback if provided (for Auto‑Allow queue)
+        if (onComplete) onComplete();
+        logger.debug('WebSocket closed, command card finalized');
     };
     
     ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
+        logger.error('WebSocket error', err);
         term.write('\r\n\x1b[31mConnection error\x1b[0m\r\n');
         ws.close();
     };
@@ -834,7 +887,6 @@ let isCommandPending = false;
         }
     });
     
-    // Fit widths specifically (DO NOT manipulate heights to prevent stretching layout)
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
             if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
@@ -852,233 +904,8 @@ let isCommandPending = false;
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Terminal Modal (Pop‑up) 
-   ═══════════════════════════════════════════════════════════════ */
-
-let _modalTerm = null;
-let _modalWs = null;
-let _modalCommandExited = false;
-let _modalCloseListener = null;
-
-function openTerminalModal(commandStr) {
-    const overlay = document.getElementById('terminal-modal');
-    const container = document.getElementById('modal-terminal-container');
-    container.innerHTML = '';
-    closeModalResources();
-
-    overlay.classList.add('active');
-    
-    const term = new Terminal({
-        cursorBlink: true,
-        cursorStyle: 'block',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 13,
-        theme: {
-            background: '#0d0e11',
-            foreground: '#ececec',
-            cursor: '#3b82f6',
-            selection: 'rgba(59, 130, 246, 0.3)',
-        },
-    });
-    
-    const fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon.WebLinksAddon());
-    term.open(container);
-    setTimeout(() => fitAddon.fit(), 100);
-    
-    _modalTerm = term;
-    _modalCommandExited = false;
-
-    const header = [
-        '',
-        '\x1b[38;2;0;212;255m',
-        '  █████╗ ██╗  ██╗████████╗██╗  ██╗███╗   ██╗███████╗██████╗████████╗',
-        ' ██╔══██╗██║  ██║╚══██╔══╝██║  ██║████╗  ██║██╔════╝██╔════╝╚══██╔══╝',
-        ' ███████║██║  ██║   ██║   ███████║██╔██╗ ██║█████╗  ██║        ██║   ',
-        ' ██╔══██║██║  ██║   ██║   ██╔══██║██║╚██╗██║██╔══╝  ██║        ██║   ',
-        ' ██║  ██║╚█████╔╝   ██║   ██║  ██║██║ ╚████║███████╗╚██████╗   ██║   ',
-        ' ╚═╝  ╚═╝ ╚════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝ ╚═════╝   ╚═╝   ',
-        '\x1b[0m',
-        '',
-        '\x1b[38;2;70;130;180m─────────────────────────────────────────────────────────────\x1b[0m',
-        `\x1b[38;2;0;212;255m  ◈ COMMAND  \x1b[38;2;255;255;255m:: \x1b[1;37m${commandStr}\x1b[0m`,
-        '\x1b[38;2;70;130;180m─────────────────────────────────────────────────────────────\x1b[0m',
-        '',
-    ];
-    header.forEach(line => term.writeln(line));
-
-    term.focus();
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/execute`;
-    const ws = new WebSocket(wsUrl);
-    _modalWs = ws;
-
-    let collectedOutput = '';
-    let exitCode = -1;
-    let startTime = Date.now();
-
-    ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'exec', command: commandStr }));
-    };
-
-    ws.onmessage = async (event) => {
-        if (event.data instanceof Blob) {
-            const reader = new FileReader();
-            reader.onload = () => {
-                const bytes = new Uint8Array(reader.result);
-                term.write(bytes);
-                collectedOutput += new TextDecoder().decode(bytes);
-            };
-            reader.readAsArrayBuffer(event.data);
-        } else {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'exit') {
-                exitCode = msg.code;
-                if (msg.output) collectedOutput = msg.output;
-                ws.close();
-                _modalCommandExited = true;
-                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-                term.writeln('');
-                term.writeln('\x1b[38;2;70;130;180m─────────────────────────────────────────────────────────────\x1b[0m');
-                if (exitCode === 0) {
-                    term.writeln(`\x1b[48;2;0;119;255m\x1b[38;2;255;255;255m\x1b[1m  ✓ EXECUTION SUCCESSFUL  \x1b[0m \x1b[38;2;0;212;255m(Exit Code: 0 | Time: ${elapsed}s)\x1b[0m`);
-                } else {
-                    term.writeln(`\x1b[48;2;220;53;69m\x1b[38;2;255;255;255m\x1b[1m  ✗ EXECUTION FAILED  \x1b[0m \x1b[38;2;255;255;255m(Exit Code: ${exitCode} | Time: ${elapsed}s)\x1b[0m`);
-                }
-                term.writeln('');
-                term.writeln('\x1b[38;2;0;212;255mSending output to AI for feedback...\x1b[0m');
-                try {
-                    const fbResponse = await fetch('/api/ai-feedback', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            command: commandStr,
-                            stdout: collectedOutput,
-                            stderr: '',
-                            exit_code: exitCode,
-                        }),
-                    });
-                    if (fbResponse.ok) {
-                        const fbData = await fbResponse.json();
-                        term.writeln('\x1b[32m✓ AI feedback received.\x1b[0m');
-                        if (fbData.answer) {
-                            addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
-                        }
-                    } else {
-                        term.writeln('\x1b[31m✗ AI feedback failed (server error).\x1b[0m');
-                    }
-                } catch (fbError) {
-                    term.writeln('\x1b[31m✗ AI feedback error: ' + fbError.message + '\x1b[0m');
-                }
-
-                term.writeln('');
-                term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
-                term.focus();
-
-                if (!_modalCloseListener) {
-                    _modalCloseListener = (e) => {
-                        if (overlay.classList.contains('active')) {
-                            closeTerminalModal();
-                        }
-                    };
-                    window.addEventListener('keydown', _modalCloseListener, true);
-                }
-
-            } else if (msg.type === 'ask') {
-                ws.send(JSON.stringify({ action: 'allow_once', path: msg.path || '' }));
-            } else if (msg.type === 'denied') {
-                term.writeln('\x1b[31mCommand denied: ' + (msg.reason || '') + '\x1b[0m');
-                ws.close();
-                _modalCommandExited = true;
-                term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
-                term.focus();
-                if (!_modalCloseListener) {
-                    _modalCloseListener = (e) => {
-                        if (overlay.classList.contains('active')) {
-                            closeTerminalModal();
-                        }
-                    };
-                    window.addEventListener('keydown', _modalCloseListener, true);
-                }
-            } else if (msg.type === 'error') {
-                term.writeln('\x1b[31mError: ' + msg.message + '\x1b[0m');
-                ws.close();
-                _modalCommandExited = true;
-                term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
-                term.focus();
-                if (!_modalCloseListener) {
-                    _modalCloseListener = (e) => {
-                        if (overlay.classList.contains('active')) {
-                            closeTerminalModal();
-                        }
-                    };
-                    window.addEventListener('keydown', _modalCloseListener, true);
-                }
-            }
-        }
-    };
-    
-    ws.onerror = (err) => {
-        term.writeln('\x1b[31mWebSocket error\x1b[0m');
-        ws.close();
-        _modalCommandExited = true;
-        term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
-        term.focus();
-        if (!_modalCloseListener) {
-            _modalCloseListener = (e) => {
-                if (overlay.classList.contains('active')) {
-                    closeTerminalModal();
-                }
-            };
-            window.addEventListener('keydown', _modalCloseListener, true);
-        }
-    };
-
-    ws.onclose = () => {
-        if (!_modalCommandExited) {
-            term.writeln('\x1b[31mConnection closed unexpectedly\x1b[0m');
-            _modalCommandExited = true;
-            term.writeln('\x1b[38;2;0;212;255mPress any key to close window...\x1b[0m');
-            term.focus();
-            if (!_modalCloseListener) {
-                _modalCloseListener = (e) => {
-                    if (overlay.classList.contains('active')) {
-                        closeTerminalModal();
-                    }
-                };
-                window.addEventListener('keydown', _modalCloseListener, true);
-            }
-        }
-    };
-}
-
-function closeModalResources() {
-    if (_modalWs && _modalWs.readyState === WebSocket.OPEN) {
-        _modalWs.close();
-    }
-    _modalWs = null;
-    if (_modalCloseListener) {
-        window.removeEventListener('keydown', _modalCloseListener, true);
-        _modalCloseListener = null;
-    }
-    if (_modalTerm) {
-        try { _modalTerm.dispose(); } catch (e) {}
-        _modalTerm = null;
-    }
-    _modalCommandExited = false;
-}
-
-function closeTerminalModal() {
-    closeModalResources();
-    document.getElementById('terminal-modal').classList.remove('active');
-}
-/* ═══════════════════════════════════════════════════════════════
    Loading portal
    ═══════════════════════════════════════════════════════════════ */
-
 function showLoading() {
     const row = document.createElement('div');
     row.className = 'message-row assistant';
@@ -1092,7 +919,6 @@ function showLoading() {
     animationActive = true;
     runPortalAnimation();
 }
-
 async function runPortalAnimation() {
     const states = [
         { icon: '🧠', label: 'Thinking', spin: false },
@@ -1101,7 +927,6 @@ async function runPortalAnimation() {
     let index = 0;
     const track = document.getElementById('portal-track');
     if (!track) return;
-    
     function createItem(state, fullText = false) {
         const div = document.createElement('div');
         div.className = 'item';
@@ -1109,10 +934,8 @@ async function runPortalAnimation() {
         div.innerHTML = `<div class="icon ${state.spin ? 'spin' : ''}">${state.icon}</div><div class="label">${labelText}</div>`;
         return div;
     }
-
     let currentItem = createItem(states[index]);
     track.appendChild(currentItem);
-    
     while (animationActive && document.getElementById('portal-track')) {
         const labelEl = currentItem.querySelector('.label');
         if (!labelEl.textContent) {
@@ -1125,14 +948,12 @@ async function runPortalAnimation() {
         }
         await new Promise(r => setTimeout(r, 800));
         if (!animationActive) break;
-
         index = (index + 1) % states.length;
         let nextItem = createItem(states[index], true);
         track.appendChild(nextItem);
         track.style.transform = 'translateY(-30px)';
         await new Promise(r => setTimeout(r, 500));
         if (!animationActive) break;
-
         track.removeChild(currentItem);
         track.style.transition = 'none';
         track.style.transform = 'translateY(0)';
@@ -1141,7 +962,6 @@ async function runPortalAnimation() {
         currentItem = nextItem;
     }
 }
-
 function removeLoading() {
     animationActive = false;
     const loading = document.getElementById('loading-indicator');
@@ -1154,12 +974,10 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-
 /* ── Auto-Allow Button Initialization ── */
 const autoAllowBtn = document.getElementById('autoAllowBtn');
 if (autoAllowBtn) {
     autoAllowBtn.addEventListener('click', toggleAutoAllow);
-    // Initialize icon states
     const offIcon = document.getElementById('auto-allow-off');
     const onIcon = document.getElementById('auto-allow-on');
     if (offIcon) offIcon.style.display = 'block';
@@ -1167,3 +985,4 @@ if (autoAllowBtn) {
 }
 
 promptInput.focus();
+logger.info('Chat UI initialized');
