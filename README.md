@@ -8,7 +8,7 @@
 
 AutoNect lets you talk to AI providers (starting with DeepSeek) through browser automation, then safely execute the suggested shell commands directly from the chat interface. It combines a lightweight browser controller, a modern web chat UI, and a layered security system into one cohesive tool.
 
-> 🚧 **Current status:** the browser bridge and chat interface are fully working. The command‑execution layer is in place, with ongoing refinements to security and user experience.
+> **Current status:** the browser bridge and chat interface are fully working. The command‑execution layer is in place, with ongoing refinements to security and user experience.
 
 ---
 
@@ -172,8 +172,8 @@ AutoNect/
 │   │   └── commands.py            # Extract ```command blocks from text
 │   │
 │   ├── prompts/
-│   │   ├── system.txt             # System prompt for CachyOS (bash)
-│   │   └── system_restricted.txt  # System prompt for Fish shell
+│   │   ├── system.txt             # System prompt (auto-generated)
+│   │   └── system_restricted.txt  # Restricted system prompt
 │   │
 │   ├── security/
 │   │   ├── command_guard.py       # Main security entry point
@@ -205,12 +205,12 @@ AutoNect/
 │   ├── test_deepseek_diagnostic.py # DOM mutation diagnostics
 │   ├── test_markdown.py           # Comprehensive Markdown test prompt
 │   ├── test_commands.py           # Test command extraction
-│   ├── test_config.py             # Test config loader
-│   └── main.py                    # (placeholder – future entry point)
+│   └── test_config.py             # Test config loader
 │
 ├── README.md                      # This file
-├── requirements.txt               # (currently empty – use pip install manually)
-└── AutoNect_DATABASE.md           # Generated file snapshot (not part of the project)
+├── requirements.txt               # Python dependencies
+├── generate_prompt.sh             # Environment detection script
+└── User/                          # Persistent AI context (user notes, plans, journal)
 ```
 
 ---
@@ -254,6 +254,7 @@ python -m src.test_markdown
 ## 🖥️ Web UI Details
 
 ### Chat Interface
+
 - **Send** – type a message, press Enter (Shift+Enter for newline).
 - **Thinking block** – collapsible section showing the AI's reasoning.
 - **Markdown rendering** – headings, lists, tables, code blocks, blockquotes, footnotes, emojis.
@@ -264,6 +265,7 @@ python -m src.test_markdown
   - On Allow: live terminal output via WebSocket, then AI feedback analysis
 
 ### Task Queue
+
 - Automatically appears when you send a message while the AI is busy.
 - **Drag to reorder** – grab the handle (six dots) and drag.
 - **Double‑click a task** to edit it.
@@ -271,6 +273,7 @@ python -m src.test_markdown
 - **Cancel** – remove a task from the queue.
 
 ### Terminal Modal
+
 - Click **Open Terminal** on any command card to open a full‑screen xterm.js terminal.
 - Fully interactive: type, resize, Ctrl+C, etc.
 - Close with the red dot or Escape key.
@@ -334,7 +337,7 @@ AutoNect is a personal research project. Use it responsibly and respect the term
 
 ## 📄 License
 
-This project is for personal use only. No license is granted for redistribution or commercial use.
+MIT License – see the [LICENSE](LICENSE) file for details.
 
 ---
 

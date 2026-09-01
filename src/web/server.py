@@ -42,6 +42,9 @@ except FileNotFoundError:
 # Session tracking
 session_data = {}
 
+# Maximum output bytes for WebSocket (150 KB)
+MAX_WEBSOCKET_OUTPUT_BYTES = 150_000
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -136,8 +139,6 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
     commands = _annotate_commands_with_safety(commands, session_id)
     return thinking, answer, commands
-
-
 
 
 def clean_deepseek_markdown(text: str) -> str:
@@ -272,12 +273,27 @@ async def websocket_execute(websocket: WebSocket):
         return exit_status
 
     async def read_pty():
+        total_bytes = 0
         while True:
             data = await reader_queue.get()
             if data is None:
                 break
-            output_chunks.append(data)
-            await websocket.send_bytes(data)
+            chunk_size = len(data)
+            if total_bytes + chunk_size > MAX_WEBSOCKET_OUTPUT_BYTES:
+                allowed = MAX_WEBSOCKET_OUTPUT_BYTES - total_bytes
+                if allowed > 0:
+                    truncated = data[:allowed]
+                    output_chunks.append(truncated)
+                    await websocket.send_bytes(truncated)
+                    total_bytes += allowed
+                warning = b"\n[OUTPUT TRUNCATED: Exceeded 150 KB limit]\n"
+                output_chunks.append(warning)
+                await websocket.send_bytes(warning)
+                break
+            else:
+                output_chunks.append(data)
+                await websocket.send_bytes(data)
+                total_bytes += chunk_size
 
     async def write_ws_to_pty():
         try:
