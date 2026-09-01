@@ -190,19 +190,25 @@ async def chat(request: ChatRequest):
 @app.websocket("/ws/execute")
 async def websocket_execute(websocket: WebSocket):
     await websocket.accept()
+    print("[WebSocket] Connection accepted")  # <-- NEW: log successful handshake
 
     init_msg = await websocket.receive_text()
+    print(f"[WebSocket] Received init: {init_msg[:200]}")
     try:
         cmd_data = json.loads(init_msg)
         command = cmd_data.get("command", "")
         session_id = cmd_data.get("session_id", "default")
-    except Exception:
+    except Exception as e:
+        print(f"[WebSocket] Invalid JSON: {e}")
         await websocket.close(code=4000, reason="Invalid JSON")
         return
 
     if not command:
+        print("[WebSocket] No command provided")
         await websocket.close(code=4000, reason="No command provided")
         return
+
+    print(f"[WebSocket] Evaluating command: {command[:100]}...")
 
     decision, info = guard.evaluate(command, session_id)
     # Treat both "ask" and "deny" as needing user approval
@@ -229,7 +235,8 @@ async def websocket_execute(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "denied", "reason": "User denied"}))
                 await websocket.close(code=4000, reason="Denied by user")
                 return
-        except Exception:
+        except Exception as e:
+            print(f"[WebSocket] Approval error: {e}")
             await websocket.send_text(json.dumps({"type": "denied", "reason": "Approval error"}))
             await websocket.close(code=4000, reason="Approval error")
             return
@@ -244,6 +251,8 @@ async def websocket_execute(websocket: WebSocket):
             pass
         os.execvp("/bin/sh", ["/bin/sh", "-c", command])
         os._exit(1)
+
+    print(f"[WebSocket] Forked child PID: {pid}")
 
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -260,7 +269,7 @@ async def websocket_execute(websocket: WebSocket):
             if data:
                 reader_queue.put_nowait(data)
             else:
-                reader_queue.put_nowait(None)
+                reader_queue.put_nowait(None)  # EOF
         except (OSError, BlockingIOError):
             pass
 
@@ -270,6 +279,7 @@ async def websocket_execute(websocket: WebSocket):
         nonlocal exit_status
         _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
         exit_status = os.waitstatus_to_exitcode(status)
+        print(f"[WebSocket] Process {pid} exited with status {exit_status}")
         return exit_status
 
     async def read_pty():
@@ -277,6 +287,7 @@ async def websocket_execute(websocket: WebSocket):
         while True:
             data = await reader_queue.get()
             if data is None:
+                print("[WebSocket] Reader received EOF, exiting")
                 break
             chunk_size = len(data)
             if total_bytes + chunk_size > MAX_WEBSOCKET_OUTPUT_BYTES:
@@ -335,7 +346,7 @@ async def websocket_execute(websocket: WebSocket):
                     except OSError:
                         break
         except WebSocketDisconnect:
-            pass
+            print("[WebSocket] Client disconnected during write")
 
     reader_task = asyncio.create_task(read_pty())
     writer_task = asyncio.create_task(write_ws_to_pty())
@@ -354,7 +365,7 @@ async def websocket_execute(websocket: WebSocket):
     writer_task.cancel()
 
     final_output = b"".join(output_chunks).decode(errors="replace")
-
+    print(f"[WebSocket] Sending exit message with code {exit_status}")
     await websocket.send_text(json.dumps({
         "type": "exit",
         "code": exit_status if exit_status is not None else -1,
