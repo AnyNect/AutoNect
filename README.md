@@ -77,40 +77,36 @@ User
 
 ---
 
-## 🚀 Quick Install (one command)
+## 🚀 Quick Install (two commands)
 
 ```bash
 git clone https://github.com/AnyNect/AutoNect.git
 cd AutoNect
-chmod +x setup.sh
+chmod +x setup.sh start.sh
 ./setup.sh
+./start.sh
 ```
 
-The script will:
+### What each script does
 
-- Check Python version (3.10+) and create a virtual environment.
-- Install all dependencies (split into `base`, `dev`, `terminal`).
-- Install Playwright Chromium.
-- Detect your browser (Thorium, Chromium, or Chrome) and configure it.
-- Generate default `config/settings.json` with all configurable options.
-- Generate `src/ai/providers/deepseek_selectors.json` (CSS selectors used by the DeepSeek provider).
-- Create a `User/` folder for your personal AI context.
-- Install the package in editable mode, making the `AutoNect` command globally available **inside** the virtual environment.
+- **`setup.sh`** – one‑time setup:
+  - Checks Python version (3.10+) and creates a virtual environment.
+  - Installs all dependencies (split into `base`, `dev`, `terminal`).
+  - Installs Playwright Chromium.
+  - Detects your browser (Thorium, Chromium, or Chrome) and generates `config/settings.json`.
+  - Creates `src/ai/providers/deepseek_selectors.json` with default CSS selectors.
+  - Generates `src/prompts/system.txt` from `system_template.txt` (substituting environment variables).
+  - Creates a `User/` folder for personal AI context.
+  - Installs the package in editable mode – makes the `AutoNect` command available.
 
-After setup:
+- **`start.sh`** – launches the server (and handles first‑time login):
+  - Activates the virtual environment.
+  - Checks if a browser profile exists (stored in `~/.autonect/browser-profile`).
+  - If **no** profile → opens the browser for you to log in to DeepSeek once; waits for you to press Enter after logging in.
+  - If **profile exists** → skips login and starts the server immediately.
+  - Runs `AutoNect` (the server) – you see the URL in the terminal.
 
-```bash
-# Activate the virtual environment (if not already active)
-source .venv/bin/activate
-
-# Log in to DeepSeek once (cookies saved for future sessions)
-python -m tests.test_browser
-
-# Start the server with the global shortcut
-AutoNect
-```
-
-> **Note:** The `AutoNect` command will only work while the virtual environment is activated. You can also run `python -m src.web.launcher` directly.
+> **💡 First‑time only:** you will be prompted to log in to DeepSeek. Your session cookies are saved, so you only need to do this once.
 
 ---
 
@@ -308,6 +304,7 @@ AutoNect/
 ├── README.md                      # This file
 ├── setup.py                       # Package installer (creates AutoNect command)
 ├── setup.sh                       # One‑command setup script
+├── start.sh                       # One‑command start script (login + server)
 ├── generate_prompt.sh             # Environment detection script
 └── LICENSE                        # MIT License
 ```
@@ -322,7 +319,7 @@ All tests are in the `tests/` directory. Run them from the project root:
 # Test configuration loader
 python -m tests.test_config
 
-# Launch browser (for login)
+# Launch browser (for login) – use if you need to re‑log in
 python -m tests.test_browser
 
 # Test Markdown rendering with a comprehensive prompt
@@ -425,6 +422,7 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 - [x] Professional logging across all modules
 - [x] CSS cleanup and UI polish
 - [x] One‑command setup script
+- [x] One‑command start script (login + server)
 - [x] Moved tests into `tests/` directory
 - [x] Global `AutoNect` command and configurable port
 - [x] Configurable WebSocket output limit and terminal command
