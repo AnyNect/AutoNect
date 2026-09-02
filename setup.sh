@@ -96,6 +96,63 @@ else
     warn "Konsole not found – native terminal integration will be disabled."
 fi
 
+# Ensure setup.py exists
+if [ ! -f "setup.py" ]; then
+    warn "setup.py not found, creating minimal one..."
+    cat > setup.py <<'EOF'
+from setuptools import setup, find_packages
+
+setup(
+    name="autonect",
+    version="1.0.0",
+    packages=find_packages(),
+    install_requires=[
+        "fastapi",
+        "uvicorn[standard]",
+        "pydantic",
+        "markdownify",
+        "playwright",
+        "patchright",
+    ],
+    entry_points={
+        "console_scripts": [
+            "AutoNect = src.web.launcher:main",
+        ],
+    },
+    author="AnyNect",
+    description="Autonomous AI–Shell bridge",
+    python_requires=">=3.10",
+)
+EOF
+    success "Created setup.py"
+fi
+
+# Ensure launcher exists
+if [ ! -f "src/web/launcher.py" ]; then
+    warn "launcher.py not found, creating..."
+    mkdir -p src/web
+    cat > src/web/launcher.py <<'EOF'
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.core.config import config
+from src.web.server import app
+import uvicorn
+
+def main():
+    port = config.get("server", "port", default=8000)
+    host = config.get("server", "host", default="127.0.0.1")
+    reload = config.get("server", "reload", default=False)
+    print(f"🚀 Starting AutoNect on http://{host}:{port}")
+    uvicorn.run("src.web.server:app", host=host, port=port, reload=reload, log_level="info")
+
+if __name__ == "__main__":
+    main()
+EOF
+    success "Created launcher.py"
+fi
+
 # ── Install package in editable mode ──
 info "Installing AutoNect package in editable mode..."
 pip install -e .

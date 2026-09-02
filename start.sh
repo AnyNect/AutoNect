@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# ── Colour output ──
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
@@ -11,14 +10,12 @@ function info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 function success() { echo -e "${GREEN}[OK]${NC} $1"; }
 function warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
-# ── Activate virtual environment ──
 if [ ! -d ".venv" ]; then
     warn "Virtual environment not found. Run ./setup.sh first."
     exit 1
 fi
 source .venv/bin/activate
 
-# ── Check if browser profile exists ──
 PROFILE_DIR=$(python -c "from src.core.config import config; print(config.get('browser', 'profile_path'))" 2>/dev/null || echo "")
 if [ -z "$PROFILE_DIR" ]; then
     PROFILE_DIR="$HOME/.autonect/browser-profile"
@@ -33,8 +30,12 @@ if [ ! -d "$PROFILE_DIR" ] || [ ! -f "$PROFILE_DIR/Default/Bookmarks" ]; then
     read -r
 fi
 
-# ── Start the server ──
 info "Starting AutoNect server..."
 
-# Use the Python launcher directly (avoids reliance on the AutoNect script)
-python -m src.web.launcher
+# Try launcher first, fallback to uvicorn
+if python -c "import src.web.launcher" 2>/dev/null; then
+    python -m src.web.launcher
+else
+    warn "Launcher not found, using uvicorn directly"
+    uvicorn src.web.server:app --host 127.0.0.1 --port 8000
+fi
