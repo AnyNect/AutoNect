@@ -1,10 +1,13 @@
 # AutoNect
 
 <p align="center">
-  <img src="https://img.shields.io/github/stars/AnyNect/AutoNect?style=for-the-badge&color=blue" alt="Stars">
-  <img src="https://img.shields.io/github/license/AnyNect/AutoNect?style=for-the-badge" alt="License">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Status-Beta-yellow?style=for-the-badge" alt="Status">
+  <a href="https://github.com/AnyNect/AutoNect/stargazers"><img src="https://img.shields.io/github/stars/AnyNect/AutoNect?style=flat&color=2563eb&logo=github&logoColor=white" alt="Stars"></a>
+  <a href="https://github.com/AnyNect/AutoNect/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AnyNect/AutoNect?style=flat&color=059669&logo=opensourceinitiative&logoColor=white" alt="License"></a>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Playwright-2EAD33?style=flat&logo=playwright&logoColor=white" alt="Playwright">
+  <img src="https://img.shields.io/badge/Security-Command%20Guard-10b981?style=flat&logo=windows-terminal&logoColor=white" alt="Command Guard">
+  <img src="https://img.shields.io/badge/Status-Beta-d97706?style=flat&logo=gitbook&logoColor=white" alt="Status">
 </p>
 
 ![AutoNect Banner](banner.svg)
