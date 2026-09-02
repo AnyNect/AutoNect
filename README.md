@@ -1,5 +1,14 @@
 # AutoNect
 
+<p align="center">
+  <img src="https://img.shields.io/github/stars/AnyNect/AutoNect?style=for-the-badge&color=blue" alt="Stars">
+  <img src="https://img.shields.io/github/license/AnyNect/AutoNect?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Status-Beta-yellow?style=for-the-badge" alt="Status">
+</p>
+
+![AutoNect Banner](banner.svg)
+
 **An autonomous AI–Shell bridge that controls web‑based AI through your browser and executes commands on your local machine.**
 
 ---
@@ -456,6 +465,12 @@ MIT License – see the [LICENSE](LICENSE) file for details.
 - [Highlight.js](https://highlightjs.org/) – syntax highlighting
 - [xterm.js](https://xtermjs.org/) – terminal emulation
 - [DeepSeek](https://chat.deepseek.com) – the AI provider
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please read our [Contributing Guide](CONTRIBUTING.md) to get started.
 
 ---
 
