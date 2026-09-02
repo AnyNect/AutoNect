@@ -35,4 +35,6 @@ fi
 
 # ── Start the server ──
 info "Starting AutoNect server..."
-AutoNect
+
+# Use the Python launcher directly (avoids reliance on the AutoNect script)
+python -m src.web.launcher
