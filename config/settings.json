@@ -1,21 +1,32 @@
 {
-    "browser": {
-        "headless": false,
-        "thorium_path": "/usr/bin/thorium-browser",
-        "profile_path": "/home/zizouurl/.autonect/browser-profile"
-    },
-
-    "ai": {
-        "provider": "deepseek",
-        "timeout_seconds": 180
-    },
-
-    "safety": {
-        "auto_approve": false,
-        "blocker_enabled": true
-    },
-
-    "logging": {
-        "level": "INFO"
-    }
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "reload": false
+  },
+  "browser": {
+    "headless": false,
+    "thorium_path": "/usr/bin/thorium-browser",
+    "profile_path": "/home/zizouurl/.autonect/browser-profile"
+  },
+  "ai": {
+    "provider": "deepseek",
+    "timeout_seconds": 180,
+    "response_timeout_ms": 180000,
+    "base_url": "https://chat.deepseek.com"
+  },
+  "websocket": {
+    "max_output_bytes": 150000
+  },
+  "terminal": {
+    "command": ["konsole", "-e", "bash", "-c", "{command}; exec bash"],
+    "fallback_terminals": ["gnome-terminal", "xterm"]
+  },
+  "safety": {
+    "auto_approve": false,
+    "blocker_enabled": true
+  },
+  "logging": {
+    "level": "INFO"
+  }
 }

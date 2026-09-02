@@ -22,6 +22,8 @@ AutoNect lets you talk to AI providers (starting with DeepSeek) through browser 
 | **🔒 Security Layer** | Layered command guard with allow/deny/ask decisions. Detects and blocks destructive commands (`rm -rf`, `find -delete`, obfuscated payloads). Path protection, shell‑composition detection, AST analysis for Python scripts. Session‑based approvals (once / session). |
 | **🖱️ Command Execution** | Click‑to‑run commands inside the chat. Live terminal output via WebSocket. AI feedback loop: command output is sent back to the AI for analysis. |
 | **🗂️ Task Queue** | Queue up multiple prompts while the AI is generating or a command is running. Drag‑to‑reorder, edit, pause/resume. |
+| **⚡ Auto‑Allow Mode** | When enabled, commands are automatically approved (after a countdown) and queued for sequential execution – no manual clicks needed. |
+| **🖥️ Native Terminal** | "Open Terminal" button launches your preferred terminal emulator (configurable) and keeps it open after command completion. |
 
 ---
 
@@ -34,7 +36,7 @@ User
 ┌─────────────────────────────────────────────────────────────┐
 │  AutoNect Web UI (FastAPI + WebSockets)                    │
 │  • Static files: index.html, styles.css, script.js         │
-│  • REST endpoints: /api/chat, /api/ai‑feedback             │
+│  • REST endpoints: /api/chat, /api/ai‑feedback, /api/open‑terminal │
 │  • WebSocket: /ws/execute                                  │
 └─────────────────────────────────────────────────────────────┘
   │
@@ -75,73 +77,152 @@ User
 
 ---
 
-## 🚀 Installation
-
-### 1. Clone the repository
+## 🚀 Quick Install (one command)
 
 ```bash
-git clone https://github.com/ZizouuRL/AutoNect.git
+git clone https://github.com/AnyNect/AutoNect.git
 cd AutoNect
+chmod +x setup.sh
+./setup.sh
 ```
 
-### 2. Create a virtual environment
+The script will:
+
+- Check Python version (3.10+) and create a virtual environment.
+- Install all dependencies (split into `base`, `dev`, `terminal`).
+- Install Playwright Chromium.
+- Detect your browser (Thorium, Chromium, or Chrome) and configure it.
+- Generate default `config/settings.json` with all configurable options.
+- Generate `src/ai/providers/deepseek_selectors.json` (CSS selectors used by the DeepSeek provider).
+- Create a `User/` folder for your personal AI context.
+- Install the package in editable mode, making the `AutoNect` command globally available **inside** the virtual environment.
+
+After setup:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # on Fish: source .venv/bin/activate.fish
+# Activate the virtual environment (if not already active)
+source .venv/bin/activate
+
+# Log in to DeepSeek once (cookies saved for future sessions)
+python -m tests.test_browser
+
+# Start the server with the global shortcut
+AutoNect
 ```
 
-### 3. Install dependencies
+> **Note:** The `AutoNect` command will only work while the virtual environment is activated. You can also run `python -m src.web.launcher` directly.
 
-```bash
-pip install fastapi uvicorn playwright patchright jinja2
-python -m playwright install chromium
-```
+---
 
-### 4. Configure the browser
+## ⚙️ Configuration
 
-Edit `config/settings.json` to point to your browser executable:
+All settings are stored in `config/settings.json`. The file is created automatically by `setup.sh`.
+
+### Server settings
 
 ```json
-{
-  "browser": {
-    "headless": false,
-    "thorium_path": "/usr/bin/thorium-browser",
-    "profile_path": "/home/youruser/.autonect/browser-profile"
-  },
-  "ai": {
-    "provider": "deepseek",
-    "timeout_seconds": 60
-  },
-  "safety": {
-    "auto_approve": false,
-    "blocker_enabled": true
-  },
-  "logging": {
-    "level": "INFO"
-  }
+"server": {
+  "host": "127.0.0.1",
+  "port": 8000,
+  "reload": false
 }
 ```
 
-> If you don't have Thorium, install it from [thorium.rocks](https://thorium.rocks) or modify `src/browser/manager.py` to use regular Chrome/Chromium.
+- `host` – bind address (use `0.0.0.0` to allow external connections).
+- `port` – port number.
+- `reload` – set to `true` for auto‑reload during development.
 
-### 5. Log in to DeepSeek
+### Browser settings
 
-Start the browser helper once and log in manually:
-
-```bash
-python -m src.test_browser
+```json
+"browser": {
+  "headless": false,
+  "thorium_path": "thorium-browser",
+  "profile_path": "/home/youruser/.autonect/browser-profile"
+}
 ```
 
-Press Enter when done. Your login cookies are saved in the profile directory.
+- `headless` – run browser in headless mode (not recommended; you need to log in).
+- `thorium_path` – path to your Thorium/Chromium executable.
+- `profile_path` – where browser cookies and session data are stored.
 
-### 6. Launch the web chat
+### AI provider settings (DeepSeek)
 
-```bash
-python -m uvicorn src.web.server:app --reload --host 127.0.0.1 --port 8000
+```json
+"ai": {
+  "provider": "deepseek",
+  "timeout_seconds": 180,
+  "response_timeout_ms": 180000,
+  "base_url": "https://chat.deepseek.com"
+}
 ```
 
-Open **http://127.0.0.1:8000** and start chatting.
+- `provider` – currently only `"deepseek"`.
+- `timeout_seconds` – overall timeout for AI operations.
+- `response_timeout_ms` – maximum wait time for a response (in milliseconds).
+- `base_url` – DeepSeek chat URL (can be changed if needed).
+
+### WebSocket output limit
+
+```json
+"websocket": {
+  "max_output_bytes": 150000
+}
+```
+
+- `max_output_bytes` – maximum bytes of command output sent over WebSocket before truncation.
+
+### Terminal emulator settings
+
+```json
+"terminal": {
+  "command": ["konsole", "-e", "bash", "-c", "{command}; exec bash"],
+  "fallback_terminals": ["gnome-terminal", "xterm"]
+}
+```
+
+- `command` – list of command parts; `{command}` is replaced with the actual command.  
+  Use this to adapt to any terminal emulator (e.g., `["alacritty", "-e", "bash", "-c", "{command}; exec bash"]`).
+- `fallback_terminals` – if the primary terminal is not found, these are tried in order.
+
+### Safety settings
+
+```json
+"safety": {
+  "auto_approve": false,
+  "blocker_enabled": true
+}
+```
+
+- `auto_approve` – if `true`, all commands are auto‑approved (disables the security layer). Use with caution.
+- `blocker_enabled` – enable/disable the command guard entirely.
+
+### Logging
+
+```json
+"logging": {
+  "level": "INFO"
+}
+```
+
+- `level` – one of `DEBUG`, `INFO`, `WARNING`, `ERROR`.
+
+### DeepSeek CSS selectors
+
+The file `src/ai/providers/deepseek_selectors.json` contains all selectors used to interact with the DeepSeek UI. You can update it if DeepSeek changes its layout:
+
+```json
+{
+  "textarea": "textarea[placeholder=\"Message DSeek\"]",
+  "send_button": "div[role=\"button\"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)",
+  "retry_button": "div[role=\"button\"].ds-button--warning",
+  "thinking_block": ".ds-think-content",
+  "assistant_container": ".ds-assistant-message-main-content",
+  "language_tag": ".d813de27",
+  "code_block": ".md-code-block",
+  "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)"
+}
+```
 
 ---
 
@@ -150,16 +231,22 @@ Open **http://127.0.0.1:8000** and start chatting.
 ```
 AutoNect/
 ├── config/
-│   ├── settings.json              # Main configuration
+│   ├── settings.json              # Main configuration (all values)
 │   ├── guard_config.json          # Security policy (paths, patterns)
 │   ├── guard_settings.json        # Guard runtime settings
 │   └── safe_commands.txt          # Allowlisted commands
+│
+├── dependencies/
+│   ├── base.txt                   # Core runtime dependencies
+│   ├── dev.txt                    # Development dependencies (pytest, linters)
+│   └── terminal.txt               # Optional terminal integration packages
 │
 ├── src/
 │   ├── ai/
 │   │   ├── provider.py            # Abstract AI provider interface
 │   │   └── providers/
-│   │       └── deepseek.py        # DeepSeek provider (Playwright)
+│   │       ├── deepseek.py        # DeepSeek provider (Playwright)
+│   │       └── deepseek_selectors.json  # CSS selectors (configurable)
 │   │
 │   ├── browser/
 │   │   ├── manager.py             # Browser lifecycle (Thorium/Chromium)
@@ -172,7 +259,8 @@ AutoNect/
 │   │   └── commands.py            # Extract ```command blocks from text
 │   │
 │   ├── prompts/
-│   │   ├── system.txt             # System prompt (auto-generated)
+│   │   ├── system_template.txt    # Template for system prompt (substituted at setup)
+│   │   ├── system.txt             # Generated system prompt (ignored by Git)
 │   │   └── system_restricted.txt  # Restricted system prompt
 │   │
 │   ├── security/
@@ -193,6 +281,7 @@ AutoNect/
 │   │   └── test_guard_strict.py   # Strict pass/fail harness
 │   │
 │   ├── web/
+│   │   ├── launcher.py            # Entry point for the AutoNect command
 │   │   ├── server.py              # FastAPI app + WebSocket endpoint
 │   │   ├── templates/
 │   │   │   └── index.html         # Chat UI
@@ -200,53 +289,60 @@ AutoNect/
 │   │       ├── styles.css         # All styling (incl. command cards, queue)
 │   │       └── script.js          # Client‑side logic (chat, queue, terminal)
 │   │
-│   ├── test_browser.py            # Launch browser for login
-│   ├── test_deepseek.py           # Direct bridge test (terminal)
-│   ├── test_deepseek_diagnostic.py # DOM mutation diagnostics
-│   ├── test_markdown.py           # Comprehensive Markdown test prompt
-│   ├── test_commands.py           # Test command extraction
-│   └── test_config.py             # Test config loader
+├── tests/                         # All test files
+│   ├── test_config.py
+│   ├── test_browser.py
+│   ├── test_markdown.py
+│   ├── test_commands.py
+│   ├── test_deepseek.py
+│   └── test_deepseek_diagnostic.py
 │
+├── logs/                          # Application logs (rotating)
+├── User/                          # Personal AI context (ignored by Git)
+│   ├── README.md
+│   ├── notes.md
+│   ├── journal.md
+│   ├── plans.md
+│   └── context.md
+├── .gitignore                     # Updated to ignore User/, prompts, logs
 ├── README.md                      # This file
-├── requirements.txt               # Python dependencies
+├── setup.py                       # Package installer (creates AutoNect command)
+├── setup.sh                       # One‑command setup script
 ├── generate_prompt.sh             # Environment detection script
-└── User/                          # Persistent AI context (user notes, plans, journal)
+└── LICENSE                        # MIT License
 ```
 
 ---
 
 ## 🧪 Testing
 
-### Command Guard (security layer)
+All tests are in the `tests/` directory. Run them from the project root:
 
-Run the test suite to verify that destructive commands are blocked and safe commands are allowed:
+```bash
+# Test configuration loader
+python -m tests.test_config
+
+# Launch browser (for login)
+python -m tests.test_browser
+
+# Test Markdown rendering with a comprehensive prompt
+python -m tests.test_markdown
+
+# Test command extraction
+python -m tests.test_commands
+
+# Test DeepSeek provider with two‑turn conversation
+python -m tests.test_deepseek
+
+# Diagnostic test for DOM mutations
+python -m tests.test_deepseek_diagnostic
+```
+
+For security tests (still in `src/security/`):
 
 ```bash
 python -m src.security.test_guard
-```
-
-For strict pass/fail (no unsafe → allow, no safe → deny):
-
-```bash
 python -m src.security.test_guard_strict
-```
-
-### Browser Bridge (raw, without UI)
-
-```bash
-python -m src.test_deepseek
-```
-
-### Markdown Cleaner
-
-```bash
-python -m src.web.test_cleaner
-```
-
-### Comprehensive Markdown Rendering Test
-
-```bash
-python -m src.test_markdown
 ```
 
 ---
@@ -261,7 +357,7 @@ python -m src.test_markdown
 - **Command cards** – each ````command` block becomes an interactive card with:
   - Safety tag: `SAFE` / `UNSURE` / `UNSAFE`
   - **Allow** / **Decline** buttons
-  - **Open Terminal** – pops up a full‑screen interactive terminal (xterm.js)
+  - **Open Terminal** – launches your configured terminal emulator (or fallback)
   - On Allow: live terminal output via WebSocket, then AI feedback analysis
 
 ### Task Queue
@@ -272,11 +368,14 @@ python -m src.test_markdown
 - **Pause / Resume** – temporarily stop the queue from processing.
 - **Cancel** – remove a task from the queue.
 
-### Terminal Modal
+### Auto‑Allow Mode
 
-- Click **Open Terminal** on any command card to open a full‑screen xterm.js terminal.
-- Fully interactive: type, resize, Ctrl+C, etc.
-- Close with the red dot or Escape key.
+When the **Auto‑Allow** toggle is activated:
+
+- Commands marked `allow` are immediately queued for execution.
+- `warn` commands show a 5‑second countdown, then auto‑approve and queue.
+- `deny` commands show a 5‑second countdown, then auto‑decline.
+- All approved commands run **sequentially** – the next command waits for the previous one to finish.
 
 ---
 
@@ -309,23 +408,33 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 | Layer | Technology |
 |-------|------------|
 | **Browser automation** | Playwright + Patchright (Thorium) |
-| **Backend** | Python 3.12+ / FastAPI / uvicorn |
+| **Backend** | Python 3.10+ / FastAPI / uvicorn |
 | **Frontend** | Vanilla HTML/CSS/JS + marked.js + Highlight.js + xterm.js |
 | **Markdown cleaning** | Custom regex pipeline |
 | **Security** | AST parsing (Python), regex pattern matching, obfuscation decoders |
-| **Terminal** | pty.fork() + xterm.js + WebSockets |
+| **Terminal** | pty.fork() + WebSockets + xterm.js |
+| **Logging** | Python `logging` with rotating file handler |
+| **Dependency management** | `dependencies/` folder with split `base`, `dev`, `terminal` |
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] **UI polish** – correct Markdown for titles, bullet points, tables, code blocks (with integrated copy).
-- [ ] **Copy full assistant answer** – one‑click copy of the entire response.
-- [ ] **Thinking / Search toggles** – control AI behaviour from the UI.
-- [ ] **Persistent shell session** – maintain state across multiple command executions.
-- [ ] **Conversation history** – full context across multiple back‑and‑forths.
-- [ ] **Multi‑provider support** – Gemini, Claude, Qwen, Kimi.
-- [ ] **Self‑healing selectors** – automatic recovery when DeepSeek's DOM changes.
+- [x] Auto‑Allow queue for sequential command execution
+- [x] Native terminal integration (configurable emulator)
+- [x] Professional logging across all modules
+- [x] CSS cleanup and UI polish
+- [x] One‑command setup script
+- [x] Moved tests into `tests/` directory
+- [x] Global `AutoNect` command and configurable port
+- [x] Configurable WebSocket output limit and terminal command
+- [x] CSS selectors moved to external JSON file
+- [x] AI response timeout and base URL configurable
+- [ ] **Chat history** – persistent conversations using `localStorage` (next feature)
+- [ ] User authentication and session management
+- [ ] Support for more terminal emulators out‑of‑the‑box
+- [ ] Cross‑platform support (Windows, macOS)
+- [ ] Dark/light theme toggle
 
 ---
 
@@ -352,4 +461,4 @@ MIT License – see the [LICENSE](LICENSE) file for details.
 
 ---
 
-*Built with ❤️ by ZizouuRL*
+*Built with ❤️ by AnyNect*

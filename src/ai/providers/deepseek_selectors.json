@@ -1,0 +1,10 @@
+{
+  "textarea": "textarea[placeholder=\"Message DSeek\"]",
+  "send_button": "div[role=\"button\"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)",
+  "retry_button": "div[role=\"button\"].ds-button--warning",
+  "thinking_block": ".ds-think-content",
+  "assistant_container": ".ds-assistant-message-main-content",
+  "language_tag": ".d813de27",
+  "code_block": ".md-code-block",
+  "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)"
+}

@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from src.ai.providers.deepseek import DeepSeekProvider
 import time
 
@@ -6,12 +11,7 @@ def main():
     provider = DeepSeekProvider()
     provider.connect()
 
-    # Inject a prompt but don't send yet
-    provider.send_prompt("Hello")   # This will inject and send automatically in current code.
-    # Wait, that will send. We need to bypass _click_send. So let's manually inject and then start observer.
-    # Better: create a raw page test.
-
-    # Actually, we can just use the provider's page and manually set up observer before sending.
+    # Get the page for manual control
     page = provider.page
 
     # Remove any existing exposed function if needed
@@ -47,7 +47,7 @@ def main():
         }
     """, "Explain AutoNect in one sentence.")
 
-    # Now manually click send? Let's click send via code but then wait for user.
+    # Click send
     button = page.locator('div[role="button"].ds-button--primary:not(.ds-button--disabled)').last
     button.click()
 

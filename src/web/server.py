@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.security import CommandGuard
+from src.core.config import config
 
 # =============================================================================
 # Logging Configuration
@@ -54,7 +55,7 @@ LOG_CONFIG = {
             "level": "DEBUG",
             "formatter": "detailed",
             "filename": "logs/app.log",
-            "maxBytes": 10_485_760,  # 10 MB
+            "maxBytes": 10_485_760,
             "backupCount": 5,
         },
     },
@@ -69,7 +70,6 @@ LOG_CONFIG = {
     },
 }
 
-# Ensure logs directory exists
 Path("logs").mkdir(exist_ok=True)
 
 dictConfig(LOG_CONFIG)
@@ -79,7 +79,6 @@ logger = logging.getLogger(__name__)
 # Application Setup
 # =============================================================================
 
-# ── Single‑thread executor for Playwright ──
 _provider_executor = ThreadPoolExecutor(max_workers=1)
 
 provider: DeepSeekProvider | None = None
@@ -101,8 +100,10 @@ except FileNotFoundError:
 # Session tracking
 session_data = {}
 
-# Maximum output bytes for WebSocket (150 KB)
-MAX_WEBSOCKET_OUTPUT_BYTES = 150_000
+# Read configurable values
+MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
+TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
+FALLBACK_TERMINALS = config.get("terminal", "fallback_terminals", default=["gnome-terminal", "xterm"])
 
 # =============================================================================
 # Lifespan & Middleware
@@ -117,6 +118,11 @@ async def lifespan(app: FastAPI):
     try:
         await loop.run_in_executor(_provider_executor, provider.connect)
         logger.info("DeepSeek provider connected")
+        print("\n" + "=" * 60)
+        print("✅ AutoNect is ready!")
+        print("🌐 Open the UI at: \033]8;;http://127.0.0.1:8000\033\\http://127.0.0.1:8000\033]8;;\033\\")
+        print("📝 Press Ctrl+C to stop the server")
+        print("=" * 60 + "\n")
     except Exception as e:
         logger.exception("Failed to connect DeepSeek provider")
         raise
@@ -190,6 +196,7 @@ def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stde
         f"[/SYSTEM_COMMAND_OUTPUT]"
     )
 
+
 def build_wrapped_commands_output(commands: list[dict]) -> str:
     parts = []
     for cmd in commands:
@@ -234,7 +241,6 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
 
 
 def clean_deepseek_markdown(text: str) -> str:
-    """Clean common markdown artifacts from DeepSeek responses."""
     if text.strip().startswith("```") and text.strip().endswith("```"):
         text = text.strip()[3:-3].strip()
     lines = text.splitlines()
@@ -325,35 +331,42 @@ async def ai_feedback(request: AIFeedbackRequest):
 
 @app.post("/api/open-terminal")
 async def open_terminal(request: OpenTerminalRequest):
-    """
-    Open a native terminal (Konsole) with the given command.
-    The command will be run in a bash shell that stays open after execution.
-    """
     command = request.command
     logger.info("Opening native terminal for command: %s", command[:100])
 
-    # Build the full command: konsole -e bash -c "your command; exec bash"
-    # This keeps the terminal open after the command finishes.
-    full_cmd = ["konsole", "-e", "bash", "-c", f"{command}; exec bash"]
+    # Build the command using the template (list of args with {command} placeholder)
+    full_cmd = []
+    for arg in TERMINAL_COMMAND_TEMPLATE:
+        if isinstance(arg, str):
+            full_cmd.append(arg.format(command=command))
+        else:
+            full_cmd.append(arg)
 
+    # Try the primary terminal command
     try:
-        # Launch the process in the background, detached from the server.
-        # We use subprocess.Popen with start_new_session=True to avoid zombie processes.
         subprocess.Popen(full_cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        logger.info("Konsole launched successfully")
+        logger.info("Terminal launched successfully")
         return JSONResponse(content={"status": "success", "message": "Terminal opened"})
     except FileNotFoundError:
-        logger.error("Konsole not found. Is it installed?")
+        logger.warning("Primary terminal not found, trying fallbacks...")
+        # Try fallback terminals
+        for fallback in FALLBACK_TERMINALS:
+            try:
+                fallback_cmd = [fallback, "-e", "bash", "-c", f"{command}; exec bash"]
+                subprocess.Popen(fallback_cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info("Fallback terminal %s launched successfully", fallback)
+                return JSONResponse(content={"status": "success", "message": f"Terminal opened with {fallback}"})
+            except FileNotFoundError:
+                continue
+        # If all fail
+        logger.error("No terminal emulator found.")
         return JSONResponse(
             status_code=500,
-            content={"error": "Konsole not found. Please install konsole."}
+            content={"error": "No terminal emulator found. Please install konsole, gnome-terminal, or xterm."}
         )
     except Exception as e:
         logger.exception("Failed to launch terminal")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to launch terminal: {str(e)}"}
-        )
+        return JSONResponse(status_code=500, content={"error": f"Failed to launch terminal: {str(e)}"})
 
 
 # =============================================================================
@@ -389,7 +402,6 @@ async def websocket_execute(websocket: WebSocket):
 
     logger.info("WebSocket command evaluation: session=%s, command=%s", session_id, command[:100])
 
-    # Security evaluation
     decision, info = guard.evaluate(command, session_id)
     if decision in ("ask", "deny"):
         severity = "unsafe" if decision == "deny" else "unsure"
@@ -423,7 +435,6 @@ async def websocket_execute(websocket: WebSocket):
             await websocket.close(code=4000, reason="Approval error")
             return
 
-    # Execute command in pseudo-terminal
     logger.info("Forking PTY for command: %s", command[:100])
     pid, master_fd = pty.fork()
     if pid == 0:

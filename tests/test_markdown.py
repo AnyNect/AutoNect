@@ -6,6 +6,10 @@ in detail so rendering issues can be diagnosed.
 """
 
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from src.ai.providers.deepseek import DeepSeekProvider
 
 # The ultimate Markdown prompt – covers every common element.
@@ -237,14 +241,12 @@ def main():
         provider.connect()
 
         print("[Tester] Sending ultimate Markdown prompt...")
-        # Bypass system prompt for raw markdown fidelity
         provider.send_prompt(MARKDOWN_PROMPT)
         response = provider.get_response()
 
         thinking = response.get("thinking", "")
         answer = response.get("answer", "")
 
-        # ── Diagnostics ──
         print("\n" + "=" * 70)
         print("DIAGNOSTICS: Thinking")
         print("=" * 70)
@@ -261,7 +263,6 @@ def main():
         print("Full answer:")
         print(answer)
 
-        # Count known Markdown elements
         print("\n" + "=" * 70)
         print("ELEMENT COUNTS")
         print("=" * 70)

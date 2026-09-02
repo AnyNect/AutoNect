@@ -2,29 +2,52 @@ import time
 import re
 import base64
 import logging
+import json
+from pathlib import Path
 from markdownify import markdownify as md
 from src.ai.provider import AIProvider
 from src.browser.manager import BrowserManager
 from src.browser.observer import DOMObserver
+from src.core.config import config
 
 logger = logging.getLogger(__name__)
 
+# Load selectors from config file
+SELECTORS_FILE = Path(__file__).parent / "deepseek_selectors.json"
+try:
+    with open(SELECTORS_FILE, "r") as f:
+        SELECTORS = json.load(f)
+    logger.debug("Loaded DeepSeek selectors from %s", SELECTORS_FILE)
+except FileNotFoundError:
+    # Fallback defaults
+    SELECTORS = {
+        "textarea": 'textarea[placeholder="Message DSeek"]',
+        "send_button": 'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)',
+        "retry_button": 'div[role="button"].ds-button--warning',
+        "thinking_block": ".ds-think-content",
+        "assistant_container": ".ds-assistant-message-main-content",
+        "language_tag": ".d813de27",
+        "code_block": ".md-code-block",
+        "primary_button": 'div[role="button"].ds-button--primary:not(.ds-button--disabled)',
+    }
+    logger.warning("Selectors file not found; using built‑in fallback selectors")
 
 class DeepSeekProvider(AIProvider):
-
     def __init__(self):
         self.browser = BrowserManager()
         self.page = None
         self.observer = None
+        self.base_url = config.get("ai", "base_url", default="https://chat.deepseek.com")
+        self.response_timeout = config.get("ai", "response_timeout_ms", default=180000)
+        self.selectors = SELECTORS
 
     def connect(self):
         logger.info("Connecting to DeepSeek...")
         self.page = self.browser.launch()
 
-        # If the page was reused, it might already be on DeepSeek, but we ensure it
-        if "chat.deepseek.com" not in self.page.url:
+        if self.base_url not in self.page.url:
             logger.debug("Navigating to DeepSeek chat page")
-            self.page.goto("https://chat.deepseek.com")
+            self.page.goto(self.base_url)
             self.page.wait_for_load_state("networkidle")
 
         self.observer = DOMObserver(self.page)
@@ -33,7 +56,6 @@ class DeepSeekProvider(AIProvider):
         logger.info("DeepSeek connected successfully")
 
     def _ensure_page(self):
-        """Check if the page is still alive; if not, reconnect."""
         try:
             self.page.evaluate("1")
         except Exception as e:
@@ -48,16 +70,12 @@ class DeepSeekProvider(AIProvider):
 
     def send_prompt(self, prompt):
         self._ensure_page()
-
         logger.info("Injecting prompt...")
+        textarea_selector = self.selectors["textarea"]
 
         for attempt in range(3):
             try:
-                self.page.wait_for_selector(
-                    'textarea[placeholder="Message DSeek"]',
-                    state="attached",
-                    timeout=5000
-                )
+                self.page.wait_for_selector(textarea_selector, state="attached", timeout=5000)
                 break
             except Exception as e:
                 if attempt == 2:
@@ -66,23 +84,21 @@ class DeepSeekProvider(AIProvider):
                 logger.warning("Textarea not ready, retrying (%d/3)...", attempt + 1)
                 time.sleep(1)
 
-        self.page.fill('textarea[placeholder="Message DSeek"]', prompt)
+        self.page.fill(textarea_selector, prompt)
 
+        # Use send_button selector from config
+        send_btn_selector = self.selectors["send_button"]
         try:
             self.page.wait_for_function(
-                """
-                () => {
-                    const btn = document.querySelector(
-                        'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
-                    );
+                f"""
+                () => {{
+                    const btn = document.querySelector('{send_btn_selector}');
                     return btn !== null;
-                }
+                }}
                 """,
                 timeout=10000
             )
-            self.page.click(
-                'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
-            )
+            self.page.click(send_btn_selector)
             logger.info("Prompt sent via button click")
         except Exception as e:
             logger.warning("Button click failed, falling back to Enter key: %s", e)
@@ -91,32 +107,30 @@ class DeepSeekProvider(AIProvider):
 
     def _click_send(self):
         logger.info("Clicking send button...")
-        button = self.page.locator(
-            'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)'
-        ).last
+        send_btn_selector = self.selectors["send_button"]
+        button = self.page.locator(send_btn_selector).last
         button.wait_for(timeout=5000)
         button.click()
         logger.info("Send button clicked")
 
     def _inject_retry_observer(self):
-        self.page.evaluate("""
-            () => {
+        retry_selector = self.selectors["retry_button"]
+        self.page.evaluate(f"""
+            () => {{
                 if (window.__autonect_retry_observer) return;
-                const observer = new MutationObserver(() => {
-                    const retryBtn = document.querySelector(
-                        'div[role="button"].ds-button--warning'
-                    );
-                    if (retryBtn) {
+                const observer = new MutationObserver(() => {{
+                    const retryBtn = document.querySelector('{retry_selector}');
+                    if (retryBtn) {{
                         console.log('[AutoNect] Auto-clicking retry button');
                         retryBtn.click();
-                    }
-                });
-                observer.observe(document.body, {
+                    }}
+                }});
+                observer.observe(document.body, {{
                     childList: true,
                     subtree: true,
-                });
+                }});
                 window.__autonect_retry_observer = observer;
-            }
+            }}
         """)
         logger.debug("Retry observer injected")
 
@@ -124,35 +138,34 @@ class DeepSeekProvider(AIProvider):
         logger.info("Waiting for response (retry observer active)...")
         self._inject_retry_observer()
 
-        self.page.evaluate("""
-            () => {
+        # Use primary_button selector for detecting completion
+        primary_btn_selector = self.selectors["primary_button"]
+        self.page.evaluate(f"""
+            () => {{
                 window.__autonect_done = false;
-                const observer = new MutationObserver((mutations) => {
-                    for (const m of mutations) {
-                        if (m.type === 'attributes' && m.attributeName === 'class') {
+                const observer = new MutationObserver((mutations) => {{
+                    for (const m of mutations) {{
+                        if (m.type === 'attributes' && m.attributeName === 'class') {{
                             const targetClass = m.target.className;
                             if (targetClass.includes('ds-button--primary') &&
-                                targetClass.includes('ds-button--disabled')) {
+                                targetClass.includes('ds-button--disabled')) {{
                                 window.__autonect_done = true;
                                 observer.disconnect();
                                 return;
-                            }
-                        }
-                    }
-                });
-                observer.observe(document.body, {
+                            }}
+                        }}
+                    }}
+                }});
+                observer.observe(document.body, {{
                     attributes: true,
                     subtree: true,
                     attributeFilter: ['class']
-                });
-            }
+                }});
+            }}
         """)
 
         try:
-            self.page.wait_for_function(
-                "window.__autonect_done",
-                timeout=180000
-            )
+            self.page.wait_for_function("window.__autonect_done", timeout=self.response_timeout)
         except Exception:
             logger.error("DeepSeek response timeout")
             raise TimeoutError("DeepSeek response timeout")
@@ -163,52 +176,58 @@ class DeepSeekProvider(AIProvider):
         self._wait_for_response()
         logger.info("Extracting response...")
 
-        thinking_text = self.page.evaluate("""
-            () => {
-                const blocks = document.querySelectorAll('.ds-think-content');
+        thinking_selector = self.selectors["thinking_block"]
+        thinking_text = self.page.evaluate(f"""
+            () => {{
+                const blocks = document.querySelectorAll('{thinking_selector}');
                 if (blocks.length === 0) return '';
                 const lastBlock = blocks[blocks.length - 1];
                 const clone = lastBlock.cloneNode(true);
                 clone.querySelectorAll('.md-code-block').forEach(el => el.remove());
                 return clone.innerText.trim();
-            }
+            }}
         """)
 
-        answer_data = self.page.evaluate("""
-            () => {
-                const containers = document.querySelectorAll('.ds-assistant-message-main-content');
-                if (containers.length === 0) return { html: '', codeBlocks: [], commands: [] };
+        container_selector = self.selectors["assistant_container"]
+        lang_tag_selector = self.selectors["language_tag"]
+        code_block_selector = self.selectors["code_block"]
+
+        answer_data = self.page.evaluate(f"""
+            () => {{
+                const containers = document.querySelectorAll('{container_selector}');
+                if (containers.length === 0) return {{ html: '', codeBlocks: [], commands: [] }};
                 const container = containers[containers.length - 1];
                 const clone = container.cloneNode(true);
 
                 const codeBlocks = [];
                 const commands = [];
 
-                clone.querySelectorAll('.md-code-block').forEach((block, idx) => {
-                    const langTag = block.querySelector('.d813de27');
+                clone.querySelectorAll('{code_block_selector}').forEach((block, idx) => {{
+                    const langTag = block.querySelector('{lang_tag_selector}');
                     const pre = block.querySelector('pre');
                     const lang = langTag ? langTag.textContent.trim() : '';
                     const code = pre ? pre.textContent.trim() : '';
 
-                    if (lang === 'command') {
-                        commands.push({ code: code, raw: code });
-                    }
-                    codeBlocks.push({ idx, lang, code });
+                    if (lang === 'command') {{
+                        commands.push({{ code: code, raw: code }});
+                    }}
+                    codeBlocks.push({{ idx, lang, code }});
 
                     const placeholder = document.createTextNode(
-                        `\\n\\nCODEBLOCKPLACEHOLDER${idx}\\n\\n`
+                        `\\n\\nCODEBLOCKPLACEHOLDER${{idx}}\\n\\n`
                     );
                     block.parentNode.replaceChild(placeholder, block);
-                });
+                }});
 
-                return {
+                return {{
                     html: clone.innerHTML,
                     codeBlocks: codeBlocks,
                     commands: commands,
-                };
-            }
+                }};
+            }}
         """)
 
+        # Rest of the code remains the same (markdown processing)
         html_content = answer_data["html"] if answer_data else ""
         code_blocks = answer_data["codeBlocks"] if answer_data else []
         commands = answer_data["commands"] if answer_data else []
