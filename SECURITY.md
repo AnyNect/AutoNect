@@ -16,7 +16,7 @@ We actively support the **latest release** of AutoNect with security updates. Ol
 
 We take security seriously. If you discover a vulnerability in AutoNect, please **do not** open a public issue – instead, follow these steps:
 
-1. **Email us directly** at **security@anynect.dev** (or use the GitHub Security Advisory).
+1. **Email us directly** at **i.j.slatna@gmail.com** (or use the GitHub Security Advisory).
 2. Include a clear description of the vulnerability, steps to reproduce, and the potential impact.
 3. If possible, provide a proof‑of‑concept or suggested fix.
 
