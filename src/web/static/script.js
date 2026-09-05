@@ -29,15 +29,16 @@ const chatArea = document.getElementById('chat-area');
 const chatContainer = document.getElementById('chat-container');
 const promptInput = document.getElementById('prompt');
 const sendBtn = document.getElementById('send-btn');
-const sessionId = crypto.randomUUID ?
-  crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
-
-logger.info('Chat session started', { sessionId });
 
 let animationActive = false;
 let autoAllowEnabled = false;
 let activeCommandGroup = null;
 let isProcessing = false;
+
+/* ── Chat History State ── */
+let currentChatId = null;
+let chats = [];
+let sidebarOpen = false;
 
 /* ── Queue state ── */
 const queueBubble = document.getElementById('queue-bubble');
@@ -73,6 +74,354 @@ marked.setOptions({
 });
 
 /* ═══════════════════════════════════════════════════════════════
+   Chat History
+   ═══════════════════════════════════════════════════════════════ */
+
+async function loadChatList() {
+    try {
+        const response = await fetch('/api/chats');
+        if (!response.ok) throw new Error('Failed to load chats');
+        chats = await response.json();
+        renderChatList();
+        return chats;
+    } catch (error) {
+        logger.error('Error loading chat list', error);
+        return [];
+    }
+}
+
+function renderChatList() {
+    const list = document.getElementById('chat-list');
+    if (!list) return;
+
+    if (chats.length === 0) {
+        list.innerHTML = `<div class="empty-message">No chats yet.<br>Start a new conversation!</div>`;
+        return;
+    }
+
+    list.innerHTML = chats.map(chat => `
+        <div class="chat-item ${chat.id === currentChatId ? 'active' : ''}" data-chat-id="${chat.id}">
+            <div class="chat-info" onclick="loadChat('${chat.id}')">
+                <div class="chat-name" id="chat-name-${chat.id}">${escapeHtml(chat.name || 'Untitled')}</div>
+                <div class="chat-preview">${escapeHtml(chat.last_message ? chat.last_message.substring(0, 60) : 'No messages')}</div>
+            </div>
+            <div class="chat-actions">
+                <button class="dropdown-btn" onclick="toggleDropdown(event, '${chat.id}')" title="More actions">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="12" cy="5" r="2"/>
+                        <circle cx="12" cy="12" r="2"/>
+                        <circle cx="12" cy="19" r="2"/>
+                    </svg>
+                </button>
+                <div class="dropdown-menu" id="dropdown-${chat.id}">
+                    <button onclick="renameChat('${chat.id}')">✏️ Rename</button>
+                    <button onclick="togglePinChat('${chat.id}', event)">${chat.pinned ? '📌 Unpin' : '📌 Pin'}</button>
+                    <button class="danger" onclick="deleteChat('${chat.id}', event)">🗑️ Delete</button>
+                </div>
+            </div>
+        </div>
+    `).join('');
+
+    document.querySelectorAll('.chat-item').forEach(el => {
+        el.addEventListener('dblclick', function(e) {
+            if (e.target.closest('button') || e.target.closest('.dropdown-menu')) return;
+            const chatId = this.dataset.chatId;
+            enableChatNameEdit(chatId);
+        });
+    });
+}
+
+function toggleDropdown(event, chatId) {
+    event.stopPropagation();
+    const menu = document.getElementById(`dropdown-${chatId}`);
+    if (!menu) return;
+    document.querySelectorAll('.dropdown-menu.show').forEach(m => {
+        if (m.id !== `dropdown-${chatId}`) m.classList.remove('show');
+    });
+    menu.classList.toggle('show');
+    if (menu.classList.contains('show')) {
+        const closeHandler = (e) => {
+            if (!menu.contains(e.target) && !e.target.closest('.dropdown-btn')) {
+                menu.classList.remove('show');
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', closeHandler), 10);
+    }
+}
+
+function renameChat(chatId) {
+    const menu = document.getElementById(`dropdown-${chatId}`);
+    if (menu) menu.classList.remove('show');
+    enableChatNameEdit(chatId);
+}
+
+function enableChatNameEdit(chatId) {
+    const chat = chats.find(c => c.id === chatId);
+    if (!chat) return;
+    const nameEl = document.getElementById(`chat-name-${chatId}`);
+    if (!nameEl) return;
+
+    const currentName = chat.name || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'chat-name-input';
+    input.value = currentName;
+    input.placeholder = 'Enter chat name...';
+    
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const saveEdit = async () => {
+        const newName = input.value.trim() || 'Untitled';
+        try {
+            const response = await fetch(`/api/chats/${chatId}/name`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName })
+            });
+            if (response.ok) {
+                chat.name = newName;
+                renderChatList();
+                logger.info('Chat name updated', { chatId, name: newName });
+            }
+        } catch (error) {
+            logger.error('Failed to update chat name', error);
+            renderChatList();
+        }
+    };
+
+    input.addEventListener('blur', saveEdit);
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            input.blur();
+        }
+        if (e.key === 'Escape') {
+            input.value = currentName;
+            input.blur();
+        }
+    });
+}
+
+async function extractChatTitleFromPage() {
+    const selector = '#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div.afa34042.e0a1edb7.e37a04e4._5a50d80';
+    try {
+        const title = await fetch('/api/browser/evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                script: `document.querySelector('${selector}')?.textContent?.trim() || ''`
+            })
+        }).then(r => r.json());
+        if (title && title.result) {
+            return title.result;
+        }
+    } catch (e) { /* ignore */ }
+    return '';
+}
+
+async function updateChatNameFromPage(chatId) {
+    const title = await extractChatTitleFromPage();
+    if (title && title.length > 0) {
+        try {
+            await fetch(`/api/chats/${chatId}/name`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: title })
+            });
+            logger.info('Chat name updated from page', { chatId, title });
+        } catch (e) {
+            logger.error('Failed to update chat name from page', e);
+        }
+    }
+}
+
+async function loadChat(chatId) {
+    if (chatId === currentChatId) {
+        toggleSidebar(false);
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/chats/${chatId}`);
+        if (!response.ok) throw new Error('Failed to load chat');
+        const data = await response.json();
+        currentChatId = chatId;
+        
+        if (data.deepseek_url) {
+            fetch('/api/browser/navigate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: data.deepseek_url })
+            }).then(() => {
+                updateChatNameFromPage(chatId).then(() => loadChatList());
+            }).catch(err => logger.error('Navigation error', err));
+        }
+        
+        chatArea.innerHTML = '';
+        if (data.messages && data.messages.length > 0) {
+            data.messages.forEach(msg => {
+                let commands = [];
+                if (msg.commands_json) {
+                    try { commands = JSON.parse(msg.commands_json); } catch(e) {}
+                }
+                // ── Historical messages: pass `true` ──
+                addMessage(msg.role, msg.content, msg.thinking || '', commands, true);
+            });
+        } else {
+            const emptyDiv = document.createElement('div');
+            emptyDiv.className = 'message-row assistant';
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.innerHTML = `<div class="bubble" style="color: var(--text-muted); text-align: center; padding: 30px 20px; opacity: 0.6;">No messages in this chat yet.<br>Start typing below!</div>`;
+            emptyDiv.appendChild(contentDiv);
+            chatArea.appendChild(emptyDiv);
+        }
+        
+        scrollToBottom();
+        renderChatList();
+        toggleSidebar(false);
+        logger.info('Loaded chat', { chatId, messages: data.messages?.length || 0 });
+    } catch (error) {
+        logger.error('Error loading chat', error);
+    }
+}
+
+async function newChat() {
+    currentChatId = null;
+    chatArea.innerHTML = '';
+    const welcomeDiv = document.createElement('div');
+    welcomeDiv.className = 'message-row assistant';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = `<div class="bubble" style="color: var(--text-muted); text-align: center; padding: 30px 20px; opacity: 0.6;">✨ New conversation<br>Type a message to start</div>`;
+    welcomeDiv.appendChild(contentDiv);
+    chatArea.appendChild(welcomeDiv);
+    
+    fetch('/api/browser/navigate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://chat.deepseek.com/' })
+    }).catch(err => logger.error('Navigation error', err));
+    
+    renderChatList();
+    toggleSidebar(false);
+    logger.info('New chat started');
+}
+
+async function togglePinChat(chatId, event) {
+    if (event) event.stopPropagation();
+    const chat = chats.find(c => c.id === chatId);
+    if (!chat) return;
+    const newPinned = !chat.pinned;
+    try {
+        const response = await fetch(`/api/chats/${chatId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pinned: newPinned })
+        });
+        if (response.ok) {
+            chat.pinned = newPinned;
+            renderChatList();
+            logger.info('Chat pin toggled', { chatId, pinned: newPinned });
+        }
+    } catch (error) {
+        logger.error('Failed to toggle pin', error);
+    }
+}
+
+async function deleteChat(chatId, event) {
+    if (event) event.stopPropagation();
+    if (!confirm('Delete this chat?')) return;
+    try {
+        const response = await fetch(`/api/chats/${chatId}`, {
+            method: 'DELETE'
+        });
+        if (response.ok) {
+            chats = chats.filter(c => c.id !== chatId);
+            if (currentChatId === chatId) {
+                currentChatId = null;
+                chatArea.innerHTML = '';
+                const welcomeDiv = document.createElement('div');
+                welcomeDiv.className = 'message-row assistant';
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                contentDiv.innerHTML = `<div class="bubble" style="color: var(--text-muted); text-align: center; padding: 30px 20px; opacity: 0.6;">✨ New conversation<br>Type a message to start</div>`;
+                welcomeDiv.appendChild(contentDiv);
+                chatArea.appendChild(welcomeDiv);
+            }
+            renderChatList();
+            logger.info('Chat deleted', { chatId });
+        }
+    } catch (error) {
+        logger.error('Failed to delete chat', error);
+    }
+}
+
+function toggleSidebar(forceState) {
+    const sidebar = document.getElementById('sidebar');
+    const isMobile = window.innerWidth <= 768;
+    
+    if (typeof forceState === 'boolean') {
+        if (isMobile) {
+            sidebarOpen = forceState;
+            sidebar.classList.toggle('sidebar-open', forceState);
+            sidebar.classList.toggle('sidebar-closed', !forceState);
+            let overlay = document.querySelector('.sidebar-overlay');
+            if (forceState && !overlay) {
+                overlay = document.createElement('div');
+                overlay.className = 'sidebar-overlay active';
+                overlay.onclick = () => toggleSidebar(false);
+                document.getElementById('main-layout').appendChild(overlay);
+            } else if (overlay) {
+                overlay.classList.toggle('active', forceState);
+            }
+        }
+        localStorage.setItem('sidebarOpen', String(sidebarOpen));
+        return;
+    }
+
+    sidebarOpen = !sidebarOpen;
+    localStorage.setItem('sidebarOpen', String(sidebarOpen));
+    
+    if (isMobile) {
+        sidebar.classList.toggle('sidebar-open', sidebarOpen);
+        sidebar.classList.toggle('sidebar-closed', !sidebarOpen);
+        let overlay = document.querySelector('.sidebar-overlay');
+        if (sidebarOpen && !overlay) {
+            overlay = document.createElement('div');
+            overlay.className = 'sidebar-overlay active';
+            overlay.onclick = () => toggleSidebar(false);
+            document.getElementById('main-layout').appendChild(overlay);
+        } else if (overlay) {
+            overlay.classList.toggle('active', sidebarOpen);
+        }
+    } else {
+        sidebar.classList.toggle('sidebar-closed', !sidebarOpen);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const saved = localStorage.getItem('sidebarOpen');
+    if (saved !== null) {
+        sidebarOpen = saved === 'true';
+    } else if (window.innerWidth > 768) {
+        sidebarOpen = true;
+    }
+    const sidebar = document.getElementById('sidebar');
+    if (sidebarOpen) {
+        sidebar.classList.remove('sidebar-closed');
+        if (window.innerWidth <= 768) sidebar.classList.add('sidebar-open');
+    } else {
+        sidebar.classList.add('sidebar-closed');
+        if (window.innerWidth <= 768) sidebar.classList.remove('sidebar-open');
+    }
+    loadChatList();
+});
+
+/* ═══════════════════════════════════════════════════════════════
    Input helpers
    ═══════════════════════════════════════════════════════════════ */
 function autoResize(textarea) {
@@ -95,7 +444,7 @@ function scrollToBottom() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Queue logic (task queue)
+   Queue logic
    ═══════════════════════════════════════════════════════════════ */
 function toggleQueueBubble() {
     queueBubble.classList.toggle('expanded');
@@ -143,18 +492,23 @@ function executeTask(promptText) {
     });
 }
 async function sendToAI(promptText) {
+    const chatId = currentChatId || null;
     try {
-        logger.debug('Sending to AI', { sessionId, prompt: promptText.substring(0, 50) });
+        logger.debug('Sending to AI', { chatId, prompt: promptText.substring(0, 50) });
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: promptText, session_id: sessionId }),
+            body: JSON.stringify({ prompt: promptText, session_id: chatId }),
         });
         if (!response.ok) throw new Error('Server returned ' + response.status);
         const data = await response.json();
         logger.info('AI response received', { commands: data.commands?.length || 0 });
         removeLoading();
-        addMessage('assistant', data.answer, data.thinking, data.commands);
+        addMessage('assistant', data.answer, data.thinking, data.commands, false); // new message
+        if (data.session_id) {
+            currentChatId = data.session_id;
+        }
+        await loadChatList();
     } catch (error) {
         logger.error('AI request failed', error);
         removeLoading();
@@ -299,7 +653,7 @@ function renderQueue() {
 /* ═══════════════════════════════════════════════════════════════
    Chat messages
    ═══════════════════════════════════════════════════════════════ */
-function addMessage(role, content, thinking = '', commands = []) {
+function addMessage(role, content, thinking = '', commands = [], historical = false) {
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
     const contentDiv = document.createElement('div');
@@ -325,13 +679,15 @@ function addMessage(role, content, thinking = '', commands = []) {
             if (pre) pre.style.color = '';
         });
         if (commands && commands.length > 0) {
-            logger.debug('Adding command cards', { count: commands.length });
+            logger.debug('Adding command cards', { count: commands.length, historical });
             const group = {
                 total: commands.length,
                 completed: 0,
                 outputs: [],
                 resolved: false,
-                onComplete: null
+                onComplete: null,
+                chat_id: currentChatId,
+                historical: historical   // <-- store flag
             };
             activeCommandGroup = group;
             let remainingCommands = [...commands];
@@ -400,6 +756,11 @@ function toggleCommandCard(headerElem) {
     const card = headerElem.closest('.command-card');
     card.classList.toggle('expanded');
     updateCommandCardTitle(card);
+    if (card.classList.contains('expanded')) {
+        card.querySelectorAll('.command-body pre code').forEach(block => {
+            hljs.highlightElement(block);
+        });
+    }
     logger.debug('Command card toggled', { expanded: card.classList.contains('expanded') });
 }
 
@@ -516,13 +877,10 @@ function createCommandSection(commands, group = null) {
         outputArea.className = 'command-output-area';
         outputArea.innerHTML = '<div class="progress-bar"></div>';
         
-        // ── Button handlers ──
         declineBtn.onclick = (e) => { e.stopPropagation(); handleDecline(card); };
-        
         allowBtn.onclick = (e) => {
             e.stopPropagation();
             if (autoAllowEnabled) {
-                // Enqueue the command
                 updateCardStatus(card, 'QUEUED', 'var(--color-warning)');
                 commandExecutionQueue.push(card);
                 if (!isCommandExecuting) processCommandQueue();
@@ -530,11 +888,10 @@ function createCommandSection(commands, group = null) {
                 handleAllow(card);
             }
         };
-        
         terminalBtn.onclick = (e) => { e.stopPropagation(); openNativeTerminal(commandCode); };
 
-        // ── Auto‑Allow logic ──
-        if (autoAllowEnabled) {
+        // ── Auto‑Allow logic: only for new messages (not historical) ──
+        if (autoAllowEnabled && !group.historical) {
             if (safety === 'deny') {
                 setTimeout(() => handleDecline(card), 100);
                 logger.debug('Auto-deny triggered for unsafe command', { command: commandCode.substring(0, 30) });
@@ -550,7 +907,6 @@ function createCommandSection(commands, group = null) {
                     if (countdown <= 0) {
                         clearInterval(timer);
                         if (timerEl.parentNode) timerEl.remove();
-                        // Enqueue instead of directly executing
                         updateCardStatus(card, 'QUEUED', 'var(--color-warning)');
                         commandExecutionQueue.push(card);
                         if (!isCommandExecuting) processCommandQueue();
@@ -567,6 +923,7 @@ function createCommandSection(commands, group = null) {
                 logger.debug('Auto-allow triggered for safe command', { command: commandCode.substring(0, 30) });
             }
         }
+        // If historical, we skip the auto timers – the user must click "Allow" manually.
 
         body.appendChild(pre);
         body.appendChild(btnRow);
@@ -599,17 +956,17 @@ async function openNativeTerminal(command) {
     }
 }
 
-async function sendBatchFeedback(outputs) {
+async function sendBatchFeedback(outputs, chatId = null) {
     try {
-        logger.debug('Sending batch feedback', { count: outputs.length });
+        logger.debug('Sending batch feedback', { count: outputs.length, chatId });
         const fbResponse = await fetch('/api/ai-feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ commands: outputs }),
+            body: JSON.stringify({ commands: outputs, chat_id: chatId }),
         });
         if (fbResponse.ok) {
             const fbData = await fbResponse.json();
-            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false); // new message
             logger.info('Batch feedback processed', { commands: fbData.commands?.length || 0 });
         } else {
             logger.warn('Batch feedback server error', { status: fbResponse.status });
@@ -653,7 +1010,7 @@ function handleDecline(card) {
         if (group.completed === group.total && !group.resolved) {
             group.resolved = true;
             activeCommandGroup = null;
-            sendBatchFeedback(group.outputs);
+            sendBatchFeedback(group.outputs, group.chat_id);
         }
     }
 }
@@ -829,15 +1186,21 @@ async function handleAllow(card, onComplete = null) {
 
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
-                logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code });
+                logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code, chatId: currentChatId });
                 const fbResponse = await fetch('/api/ai-feedback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ command: cmd, stdout: out, stderr: '', exit_code: code }),
+                    body: JSON.stringify({
+                        command: cmd,
+                        stdout: out,
+                        stderr: '',
+                        exit_code: code,
+                        chat_id: currentChatId
+                    }),
                 });
                 if (fbResponse.ok) {
                     const fbData = await fbResponse.json();
-                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || []);
+                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false); // new message
                     logger.info('Single feedback processed');
                 } else {
                     logger.warn('Single feedback server error', { status: fbResponse.status });
@@ -854,7 +1217,7 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                sendBatchFeedback(group.outputs);
+                sendBatchFeedback(group.outputs, group.chat_id);
             }
         } else {
             sendSingleFeedback(commandStr, collectedOutput, exitCode);
@@ -864,7 +1227,6 @@ async function handleAllow(card, onComplete = null) {
         sendBtn.disabled = !promptInput.value.trim();
         processNextQueueTask();
 
-        // Call the completion callback if provided (for Auto‑Allow queue)
         if (onComplete) onComplete();
         logger.debug('WebSocket closed, command card finalized');
     };

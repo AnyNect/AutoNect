@@ -26,6 +26,7 @@ from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.security import CommandGuard
 from src.core.config import config
+from src.database import upsert_chat, add_message, get_chat_list, get_chat, update_chat, delete_chat, update_chat_name
 
 # =============================================================================
 # Logging Configuration
@@ -100,7 +101,6 @@ except FileNotFoundError:
 # Session tracking
 session_data = {}
 
-# Read configurable values
 MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
 TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
 FALLBACK_TERMINALS = config.get("terminal", "fallback_terminals", default=["gnome-terminal", "xterm"])
@@ -162,6 +162,7 @@ class ChatResponse(BaseModel):
     thinking: str
     answer: str
     commands: list[dict] = []
+    session_id: str
 
 
 class AIFeedbackRequest(BaseModel):
@@ -170,6 +171,7 @@ class AIFeedbackRequest(BaseModel):
     stdout: str | None = None
     stderr: str | None = None
     exit_code: int | None = None
+    chat_id: str | None = None
 
 
 class AIFeedbackResponse(BaseModel):
@@ -180,6 +182,10 @@ class AIFeedbackResponse(BaseModel):
 
 class OpenTerminalRequest(BaseModel):
     command: str
+
+
+class NavigateRequest(BaseModel):
+    url: str
 
 
 # =============================================================================
@@ -272,10 +278,9 @@ async def chat(request: ChatRequest):
 
     loop = asyncio.get_running_loop()
 
-    if request.session_id is None or request.session_id not in session_data:
-        if request.session_id is None:
-            request.session_id = str(uuid.uuid4())
-            logger.info("New session created: %s", request.session_id)
+    if request.session_id is None:
+        request.session_id = str(uuid.uuid4())
+        logger.info("New session created: %s", request.session_id)
         full_prompt = f"{SYSTEM_PROMPT}\n\n{request.prompt}" if SYSTEM_PROMPT else request.prompt
         session_data[request.session_id] = True
     else:
@@ -289,8 +294,21 @@ async def chat(request: ChatRequest):
     try:
         response = await loop.run_in_executor(_provider_executor, send_and_get)
         thinking, answer, commands = _extract_response(response, request.session_id)
+
+        deepseek_url = provider.page.url if provider.page else None
+        chat_name = request.prompt[:50] if request.session_id not in session_data else None
+        upsert_chat(request.session_id, deepseek_url, chat_name)
+
+        add_message(request.session_id, "user", request.prompt)
+        add_message(request.session_id, "assistant", answer, thinking, commands)
+
         logger.info("Chat completed for session %s, commands=%d", request.session_id, len(commands))
-        return ChatResponse(thinking=thinking, answer=answer, commands=commands)
+        return ChatResponse(
+            thinking=thinking,
+            answer=answer,
+            commands=commands,
+            session_id=request.session_id
+        )
     except Exception as e:
         logger.exception("Error during chat processing for session %s", request.session_id)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -318,6 +336,11 @@ async def ai_feedback(request: AIFeedbackRequest):
     try:
         ai_response = await loop.run_in_executor(_provider_executor, send_wrapped_and_get)
         thinking, answer, commands = _extract_response(ai_response)
+
+        if request.chat_id:
+            add_message(request.chat_id, "assistant", answer, thinking, commands)
+            logger.info("Stored feedback response for chat %s", request.chat_id)
+
         logger.info("AI feedback processed, commands=%d", len(commands))
         return AIFeedbackResponse(
             thinking=thinking,
@@ -334,7 +357,6 @@ async def open_terminal(request: OpenTerminalRequest):
     command = request.command
     logger.info("Opening native terminal for command: %s", command[:100])
 
-    # Build the command using the template (list of args with {command} placeholder)
     full_cmd = []
     for arg in TERMINAL_COMMAND_TEMPLATE:
         if isinstance(arg, str):
@@ -342,14 +364,12 @@ async def open_terminal(request: OpenTerminalRequest):
         else:
             full_cmd.append(arg)
 
-    # Try the primary terminal command
     try:
         subprocess.Popen(full_cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         logger.info("Terminal launched successfully")
         return JSONResponse(content={"status": "success", "message": "Terminal opened"})
     except FileNotFoundError:
         logger.warning("Primary terminal not found, trying fallbacks...")
-        # Try fallback terminals
         for fallback in FALLBACK_TERMINALS:
             try:
                 fallback_cmd = [fallback, "-e", "bash", "-c", f"{command}; exec bash"]
@@ -358,7 +378,6 @@ async def open_terminal(request: OpenTerminalRequest):
                 return JSONResponse(content={"status": "success", "message": f"Terminal opened with {fallback}"})
             except FileNotFoundError:
                 continue
-        # If all fail
         logger.error("No terminal emulator found.")
         return JSONResponse(
             status_code=500,
@@ -367,6 +386,105 @@ async def open_terminal(request: OpenTerminalRequest):
     except Exception as e:
         logger.exception("Failed to launch terminal")
         return JSONResponse(status_code=500, content={"error": f"Failed to launch terminal: {str(e)}"})
+
+
+# ── Chat history endpoints ──
+
+@app.get("/api/chats")
+async def list_chats():
+    chats = get_chat_list()
+    return JSONResponse(content=chats)
+
+
+@app.get("/api/chats/{chat_id}")
+async def get_chat_history(chat_id: str):
+    chat = get_chat(chat_id)
+    if not chat:
+        return JSONResponse(status_code=404, content={"error": "Chat not found"})
+    return JSONResponse(content=chat)
+
+
+@app.put("/api/chats/{chat_id}")
+async def update_chat_metadata(chat_id: str, request: Request):
+    data = await request.json()
+    name = data.get("name")
+    pinned = data.get("pinned")
+    update_chat(chat_id, name, pinned)
+    return JSONResponse(content={"status": "ok"})
+
+
+@app.put("/api/chats/{chat_id}/name")
+async def update_chat_name_endpoint(chat_id: str, request: Request):
+    data = await request.json()
+    name = data.get("name")
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "Name is required"})
+    update_chat_name(chat_id, name)
+    return JSONResponse(content={"status": "ok"})
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat_endpoint(chat_id: str):
+    delete_chat(chat_id)
+    return JSONResponse(content={"status": "ok"})
+
+
+# ── Browser navigation ──
+
+@app.post("/api/browser/navigate")
+async def navigate_browser(request: NavigateRequest):
+    if not provider or not provider.page:
+        logger.error("Provider or page not available")
+        return JSONResponse(status_code=500, content={"error": "Browser not available"})
+
+    url = request.url
+    logger.info("Navigating browser to: %s", url)
+
+    def _navigate():
+        try:
+            provider.page.goto(url, timeout=30000)
+            provider.page.wait_for_load_state("networkidle")
+            logger.info("Navigation successful")
+        except Exception as e:
+            logger.exception("Navigation failed: %s", e)
+            raise
+
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(_provider_executor, _navigate)
+        return JSONResponse(content={"status": "success", "url": url})
+    except Exception as e:
+        logger.exception("Navigation error")
+        return JSONResponse(status_code=500, content={"error": f"Navigation failed: {str(e)}"})
+
+
+@app.post("/api/browser/evaluate")
+async def evaluate_browser(request: Request):
+    if not provider or not provider.page:
+        logger.error("Provider or page not available")
+        return JSONResponse(status_code=500, content={"error": "Browser not available"})
+
+    data = await request.json()
+    script = data.get("script")
+    if not script:
+        return JSONResponse(status_code=400, content={"error": "Script is required"})
+
+    logger.debug("Evaluating script in browser")
+
+    def _evaluate():
+        try:
+            result = provider.page.evaluate(script)
+            return result
+        except Exception as e:
+            logger.exception("Script evaluation failed: %s", e)
+            raise
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(_provider_executor, _evaluate)
+        return JSONResponse(content={"result": result})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # =============================================================================
