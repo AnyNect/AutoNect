@@ -16,7 +16,7 @@ import logging
 from logging.config import dictConfig
 import subprocess
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -104,6 +104,14 @@ session_data = {}
 MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
 TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
 FALLBACK_TERMINALS = config.get("terminal", "fallback_terminals", default=["gnome-terminal", "xterm"])
+OUTPUT_FILE_THRESHOLD = 10 * 1024  # 10 KB
+
+# ── Output cache ──
+_output_cache = {}  # key: output_id, value: stdout string
+
+# ── Temporary directory for large outputs ──
+TMP_DIR = Path("data/tmp")
+TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # =============================================================================
 # Lifespan & Middleware
@@ -172,6 +180,7 @@ class AIFeedbackRequest(BaseModel):
     stderr: str | None = None
     exit_code: int | None = None
     chat_id: str | None = None
+    output_id: str | None = None
 
 
 class AIFeedbackResponse(BaseModel):
@@ -317,6 +326,18 @@ async def chat(request: ChatRequest):
 @app.post("/api/ai-feedback", response_model=AIFeedbackResponse)
 async def ai_feedback(request: AIFeedbackRequest):
     logger.info("AI feedback request received")
+
+    # Get stdout from cache if available
+    stdout = request.stdout or ""
+    if not stdout and request.output_id:
+        cached = _output_cache.pop(request.output_id, None)
+        if cached:
+            stdout = cached
+            logger.info("Retrieved stdout from cache using output_id %s (length: %s)", request.output_id, len(stdout))
+
+    stdout_len = len(stdout) if stdout else 0
+    logger.info("stdout length: %s bytes (threshold: %s)", stdout_len, OUTPUT_FILE_THRESHOLD)
+
     if not provider:
         logger.error("Provider not initialized")
         return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
@@ -324,13 +345,74 @@ async def ai_feedback(request: AIFeedbackRequest):
     loop = asyncio.get_running_loop()
 
     def send_wrapped_and_get():
-        if request.commands:
-            wrapped = build_wrapped_commands_output(request.commands)
+        # Determine stdout and command for potential file upload
+        stdout_content = stdout
+        command_display = request.command or ""
+
+        # If we have batch commands and no stdout_content, combine them
+        if request.commands and not stdout_content:
+            combined_output = ""
+            combined_command = ""
+            for cmd in request.commands:
+                combined_output += f"Command: {cmd.get('command', '')}\n"
+                combined_output += f"Exit code: {cmd.get('exit_code', -1)}\n"
+                combined_output += f"stdout:\n{cmd.get('stdout', '')}\n"
+                combined_output += f"stderr:\n{cmd.get('stderr', '')}\n\n"
+                if not combined_command:
+                    combined_command = cmd.get('command', '')
+                else:
+                    combined_command += " | " + cmd.get('command', '')
+            if len(combined_output) > OUTPUT_FILE_THRESHOLD:
+                stdout_content = combined_output
+                command_display = combined_command or "multiple commands"
+            else:
+                # Not large, send as normal wrapped output
+                wrapped = build_wrapped_commands_output(request.commands)
+                provider.send_prompt(wrapped)
+                return provider.get_response()
+
+        # Handle large stdout content (single or combined)
+        if stdout_content and len(stdout_content) > OUTPUT_FILE_THRESHOLD:
+            temp_file = TMP_DIR / f"output_{uuid.uuid4().hex[:8]}.txt"
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(stdout_content)
+                logger.info("Large output saved to %s (%s bytes)", temp_file, temp_file.stat().st_size)
+
+                selector = provider.selectors.get("file_input", "input[type='file']")
+                provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+                provider.page.set_input_files(selector, str(temp_file))
+                logger.info("Large output file attached to DeepSeek: %s", temp_file.name)
+
+                provider.send_prompt(
+                    f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display or 'unknown'}\nThe output is attached as a file.\n[/SYSTEM_COMMAND_OUTPUT]"
+                )
+            except Exception as e:
+                logger.error("Failed to upload output file: %s", e)
+                truncated = stdout_content[:1000] + "...\n[Output truncated, too large to include]"
+                if request.commands:
+                    # fallback: send truncated combined output
+                    wrapped = f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display}\nstdout:\n{truncated}\n[/SYSTEM_COMMAND_OUTPUT]"
+                else:
+                    wrapped = build_wrapped_command_output(
+                        request.command, request.exit_code, truncated, request.stderr or ""
+                    )
+                provider.send_prompt(wrapped)
+            finally:
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception:
+                    pass
         else:
-            wrapped = build_wrapped_command_output(
-                request.command, request.exit_code, request.stdout, request.stderr
-            )
-        provider.send_prompt(wrapped)
+            # normal flow
+            if request.commands:
+                wrapped = build_wrapped_commands_output(request.commands)
+            else:
+                wrapped = build_wrapped_command_output(
+                    request.command, request.exit_code, stdout_content or "", request.stderr or ""
+                )
+            provider.send_prompt(wrapped)
         return provider.get_response()
 
     try:
@@ -487,6 +569,38 @@ async def evaluate_browser(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── File upload ──
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    if not provider or not provider.page:
+        logger.error("Provider or page not available")
+        return JSONResponse(status_code=500, content={"error": "Browser not available"})
+
+    content = await file.read()
+    file_name = file.filename
+    mime_type = file.content_type or "application/octet-stream"
+    selector = provider.selectors.get("file_input", "input[type='file']")
+
+    loop = asyncio.get_running_loop()
+
+    def _set_files():
+        provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+        provider.page.set_input_files(selector, {
+            "name": file_name,
+            "mimeType": mime_type,
+            "buffer": content
+        })
+
+    try:
+        await loop.run_in_executor(_provider_executor, _set_files)
+        logger.info("File uploaded to DeepSeek: %s (%s bytes)", file_name, len(content))
+        return JSONResponse(content={"status": "success", "filename": file_name})
+    except Exception as e:
+        logger.exception("Failed to upload file")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # =============================================================================
 # WebSocket Endpoint
 # =============================================================================
@@ -594,29 +708,13 @@ async def websocket_execute(websocket: WebSocket):
         return exit_status
 
     async def read_pty():
-        total_bytes = 0
         while True:
             data = await reader_queue.get()
             if data is None:
                 logger.debug("Reader received EOF")
                 break
-            chunk_size = len(data)
-            if total_bytes + chunk_size > MAX_WEBSOCKET_OUTPUT_BYTES:
-                allowed = MAX_WEBSOCKET_OUTPUT_BYTES - total_bytes
-                if allowed > 0:
-                    truncated = data[:allowed]
-                    output_chunks.append(truncated)
-                    await websocket.send_bytes(truncated)
-                    total_bytes += allowed
-                warning = b"\n[OUTPUT TRUNCATED: Exceeded 150 KB limit]\n"
-                output_chunks.append(warning)
-                await websocket.send_bytes(warning)
-                logger.warning("Output truncated for command %s", command[:50])
-                break
-            else:
-                output_chunks.append(data)
-                await websocket.send_bytes(data)
-                total_bytes += chunk_size
+            output_chunks.append(data)
+            await websocket.send_bytes(data)
 
     async def write_ws_to_pty():
         try:
@@ -677,11 +775,17 @@ async def websocket_execute(websocket: WebSocket):
     writer_task.cancel()
 
     final_output = b"".join(output_chunks).decode(errors="replace")
+
+    output_id = uuid.uuid4().hex
+    _output_cache[output_id] = final_output
+    logger.info("Cached stdout with output_id %s (length: %s)", output_id, len(final_output))
+
     logger.info("Sending exit message with code %d", exit_status if exit_status is not None else -1)
     await websocket.send_text(json.dumps({
         "type": "exit",
         "code": exit_status if exit_status is not None else -1,
-        "output": final_output
+        "output": final_output,
+        "output_id": output_id
     }))
 
     await websocket.close()

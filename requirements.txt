@@ -4,3 +4,4 @@ pydantic
 markdownify
 playwright
 patchright
+python-multipart

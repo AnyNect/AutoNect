@@ -1526,3 +1526,18 @@ header {
 .chat-item .dropdown-menu .danger:hover {
     background: rgba(248,113,113,0.1);
 }
+
+.file-chip {
+    background: rgba(255,255,255,0.08);
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.file-chip .remove-file {
+    cursor: pointer;
+    color: #f87171;
+    font-weight: bold;
+}

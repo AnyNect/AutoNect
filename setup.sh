@@ -156,6 +156,7 @@ fi
 # ── Install package in editable mode ──
 info "Installing AutoNect package in editable mode..."
 pip install -e .
+pip install -r dependencies/base.txt
 
 # ── Install Playwright browsers ──
 info "Installing Playwright Chromium (headless) ..."

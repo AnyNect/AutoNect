@@ -54,6 +54,44 @@ let taskQueue = [];
 let commandExecutionQueue = [];
 let isCommandExecuting = false;
 
+/* ── File upload state ── */
+let attachedFiles = [];
+
+// DeepSeek supported formats (based on their UI error message)
+const SUPPORTED_EXTENSIONS = [
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
+  '.txt', '.csv', '.json', '.xml', '.yaml', '.yml',
+  '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.h', '.hpp',
+  '.go', '.rs', '.rb', '.php', '.java', '.kt', '.scala', '.swift',
+  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
+  '.html', '.css', '.scss', '.sass', '.less', '.md', '.markdown', '.rst', '.tex', '.ini', '.conf', '.cfg'
+];
+
+const SUPPORTED_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml',
+  'text/plain', 'text/csv', 'application/json', 'application/xml', 'text/yaml',
+  'text/x-python', 'text/javascript', 'text/typescript', 'text/jsx', 'text/tsx',
+  'text/x-c', 'text/x-c++', 'text/x-go', 'text/x-rust', 'text/x-ruby', 'text/x-php',
+  'text/x-java', 'text/x-kotlin', 'text/x-scala', 'text/x-swift',
+  'text/x-shellscript', 'application/x-bash', 'text/x-powershell',
+  'text/html', 'text/css', 'text/x-scss', 'text/x-sass', 'text/x-less'
+];
+
+function isFileSupported(file) {
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (SUPPORTED_EXTENSIONS.includes(ext)) return true;
+  if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
+  return false;
+}
+
 /* ── Syntax Highlighting ── */
 marked.setOptions({
     highlight: function(code, lang) {
@@ -267,7 +305,6 @@ async function loadChat(chatId) {
                 if (msg.commands_json) {
                     try { commands = JSON.parse(msg.commands_json); } catch(e) {}
                 }
-                // ── Historical messages: pass `true` ──
                 addMessage(msg.role, msg.content, msg.thinking || '', commands, true);
             });
         } else {
@@ -486,11 +523,52 @@ function executeTask(promptText) {
     isProcessing = true;
     addMessage('user', promptText);
     showLoading();
-    sendToAI(promptText).then(() => {
+    uploadFilesAndSend(promptText).then(() => {
         isProcessing = false;
         processNextQueueTask();
     });
 }
+
+async function uploadFilesAndSend(promptText) {
+    // Upload all attached files first
+    if (attachedFiles.length > 0) {
+        logger.info(`Uploading ${attachedFiles.length} file(s)...`);
+        for (let i = 0; i < attachedFiles.length; i++) {
+            const file = attachedFiles[i];
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const resp = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.error || 'Upload failed');
+                }
+                const data = await resp.json();
+                logger.info(`Uploaded ${file.name}`, data);
+            } catch (e) {
+                logger.error('File upload error:', e);
+                alert(`Failed to upload ${file.name}: ${e.message}`);
+                // Optionally clear files? We'll stop sending.
+                // We'll just clear the list and continue? Better to stop and let user retry.
+                isProcessing = false;
+                sendBtn.disabled = !promptInput.value.trim();
+                // Restore files (they are still in attachedFiles)
+                // We'll not clear them, so user can retry.
+                throw e; // Stop execution
+            }
+        }
+        // After upload, clear the file list
+        attachedFiles = [];
+        showAttachedFiles();
+    }
+
+    // Now send the prompt
+    await sendToAI(promptText);
+}
+
 async function sendToAI(promptText) {
     const chatId = currentChatId || null;
     try {
@@ -504,7 +582,7 @@ async function sendToAI(promptText) {
         const data = await response.json();
         logger.info('AI response received', { commands: data.commands?.length || 0 });
         removeLoading();
-        addMessage('assistant', data.answer, data.thinking, data.commands, false); // new message
+        addMessage('assistant', data.answer, data.thinking, data.commands, false);
         if (data.session_id) {
             currentChatId = data.session_id;
         }
@@ -522,6 +600,7 @@ async function sendToAI(promptText) {
         scrollToBottom();
     }
 }
+
 function processNextQueueTask() {
     if (!isPaused && taskQueue.length > 0) {
         const nextPrompt = taskQueue.shift();
@@ -687,7 +766,7 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                 resolved: false,
                 onComplete: null,
                 chat_id: currentChatId,
-                historical: historical   // <-- store flag
+                historical: historical
             };
             activeCommandGroup = group;
             let remainingCommands = [...commands];
@@ -890,7 +969,6 @@ function createCommandSection(commands, group = null) {
         };
         terminalBtn.onclick = (e) => { e.stopPropagation(); openNativeTerminal(commandCode); };
 
-        // ── Auto‑Allow logic: only for new messages (not historical) ──
         if (autoAllowEnabled && !group.historical) {
             if (safety === 'deny') {
                 setTimeout(() => handleDecline(card), 100);
@@ -923,7 +1001,6 @@ function createCommandSection(commands, group = null) {
                 logger.debug('Auto-allow triggered for safe command', { command: commandCode.substring(0, 30) });
             }
         }
-        // If historical, we skip the auto timers – the user must click "Allow" manually.
 
         body.appendChild(pre);
         body.appendChild(btnRow);
@@ -956,17 +1033,17 @@ async function openNativeTerminal(command) {
     }
 }
 
-async function sendBatchFeedback(outputs, chatId = null) {
+async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
     try {
-        logger.debug('Sending batch feedback', { count: outputs.length, chatId });
+        logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId });
         const fbResponse = await fetch('/api/ai-feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ commands: outputs, chat_id: chatId }),
+            body: JSON.stringify({ commands: outputs, chat_id: chatId, output_id: outputId }),
         });
         if (fbResponse.ok) {
             const fbData = await fbResponse.json();
-            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false); // new message
+            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false);
             logger.info('Batch feedback processed', { commands: fbData.commands?.length || 0 });
         } else {
             logger.warn('Batch feedback server error', { status: fbResponse.status });
@@ -1110,6 +1187,7 @@ async function handleAllow(card, onComplete = null) {
     
     let collectedOutput = '';
     let exitCode = -1;
+    let outputId = null;   // <-- capture output_id from exit message
 
     ws.onmessage = async (event) => {
         if (event.data instanceof Blob) {
@@ -1133,8 +1211,9 @@ async function handleAllow(card, onComplete = null) {
             if (msg.type === 'exit') {
                 exitCode = msg.code;
                 if (msg.output) collectedOutput = msg.output;
+                outputId = msg.output_id || null;   // <-- store output_id
                 ws.close();
-                logger.info('Command exited', { exitCode, outputLength: collectedOutput.length });
+                logger.info('Command exited', { exitCode, outputLength: collectedOutput.length, outputId });
             } else if (msg.type === 'error') {
                 term.writeln('\r\n\x1b[31m' + msg.message + '\x1b[0m');
                 logger.error('WebSocket error message', msg);
@@ -1184,9 +1263,10 @@ async function handleAllow(card, onComplete = null) {
         card.classList.remove('expanded');
         updateCommandCardTitle(card);
 
+        // ── Updated sendSingleFeedback with output_id ──
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
-                logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code, chatId: currentChatId });
+                logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code, chatId: currentChatId, outputId });
                 const fbResponse = await fetch('/api/ai-feedback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1195,12 +1275,13 @@ async function handleAllow(card, onComplete = null) {
                         stdout: out,
                         stderr: '',
                         exit_code: code,
-                        chat_id: currentChatId
+                        chat_id: currentChatId,
+                        output_id: outputId   // <-- pass output_id
                     }),
                 });
                 if (fbResponse.ok) {
                     const fbData = await fbResponse.json();
-                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false); // new message
+                    if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false);
                     logger.info('Single feedback processed');
                 } else {
                     logger.warn('Single feedback server error', { status: fbResponse.status });
@@ -1217,7 +1298,8 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                sendBatchFeedback(group.outputs, group.chat_id);
+                // ── Pass output_id to batch feedback ──
+                sendBatchFeedback(group.outputs, group.chat_id, outputId);
             }
         } else {
             sendSingleFeedback(commandStr, collectedOutput, exitCode);
@@ -1263,6 +1345,109 @@ async function handleAllow(card, onComplete = null) {
     });
     observer.observe(card, { attributes: true, attributeFilter: ['class'] });
     card._observer = observer;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   File upload UI helpers
+   ═══════════════════════════════════════════════════════════════ */
+
+function showAttachedFiles() {
+    const container = document.getElementById('attached-files');
+    if (!container) return;
+    if (attachedFiles.length === 0) {
+        container.innerHTML = '';
+        container.style.display = 'none';
+        return;
+    }
+    container.style.display = 'flex';
+    container.innerHTML = attachedFiles.map((file, index) =>
+        `<span class="file-chip">${escapeHtml(file.name)} (${(file.size / 1024).toFixed(1)} KB) <span class="remove-file" data-index="${index}">&times;</span></span>`
+    ).join('');
+
+    // Attach click handlers for remove
+    container.querySelectorAll('.remove-file').forEach(el => {
+        el.addEventListener('click', function() {
+            const idx = parseInt(this.dataset.index, 10);
+            if (!isNaN(idx)) {
+                attachedFiles.splice(idx, 1);
+                showAttachedFiles();
+                // Reset the file input so the same file can be selected again if needed
+                const fileInput = document.getElementById('file-input');
+                if (fileInput) fileInput.value = '';
+            }
+        });
+    });
+}
+
+// ── File input handler ──
+const fileInput = document.getElementById('file-input');
+if (fileInput) {
+    fileInput.addEventListener('change', function(e) {
+        if (this.files.length === 0) return;
+        for (let file of this.files) {
+            if (!isFileSupported(file)) {
+                alert(`File "${file.name}" is not supported. Supported formats: PDF, DOC, XLSX, PPT, images, text, and code.`);
+                continue;
+            }
+            // Avoid duplicates (by name + size)
+            const exists = attachedFiles.some(f => f.name === file.name && f.size === file.size);
+            if (!exists) {
+                attachedFiles.push(file);
+            }
+        }
+        showAttachedFiles();
+        this.value = ''; // Reset so same file can be selected again
+    });
+
+    // Drag and drop on the upload button
+    const label = document.getElementById('file-upload-btn');
+    if (label) {
+        let dragCounter = 0;
+        label.addEventListener('dragenter', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter++;
+            if (dragCounter === 1) this.classList.add('drag-over');
+        });
+        label.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        label.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter--;
+            if (dragCounter === 0) this.classList.remove('drag-over');
+        });
+        label.addEventListener('drop', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.classList.remove('drag-over');
+            dragCounter = 0;
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                for (let file of files) {
+                    if (!isFileSupported(file)) {
+                        alert(`File "${file.name}" is not supported. Supported formats: PDF, DOC, XLSX, PPT, images, text, and code.`);
+                        continue;
+                    }
+                    const exists = attachedFiles.some(f => f.name === file.name && f.size === file.size);
+                    if (!exists) {
+                        attachedFiles.push(file);
+                    }
+                }
+                showAttachedFiles();
+                if (fileInput) fileInput.value = '';
+            }
+        });
+        // Keyboard: Enter/Space on label opens file picker
+        label.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (fileInput) fileInput.click();
+            }
+        });
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════
