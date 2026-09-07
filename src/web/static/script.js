@@ -1355,13 +1355,33 @@ async function handleAllow(card, onComplete = null) {
    ═══════════════════════════════════════════════════════════════ */
 
 const SUPPORTED_EXTENSIONS = [
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
-  '.txt', '.csv', '.json', '.xml', '.yaml', '.yml',
-  '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.h', '.hpp',
-  '.go', '.rs', '.rb', '.php', '.java', '.kt', '.scala', '.swift',
+  // Documents & eBooks
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.rtf', '.epub',
+
+  // Images
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.heic', '.heif',
+
+  // Audio (Gemini, OpenAI Audio / Whisper)
+  '.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg', '.opus',
+
+  // Video (Gemini, OpenAI Multimodal)
+  '.mp4', '.webm', '.mov', '.avi', '.mkv',
+
+  // Data, Configuration & Queries
+  '.txt', '.csv', '.tsv', '.json', '.jsonc', '.xml', '.yaml', '.yml', 
+  '.log', '.ini', '.conf', '.cfg', '.toml', '.env', '.properties', '.sql', '.graphql',
+
+  // Web & UI Frameworks
+  '.html', '.css', '.scss', '.sass', '.less', '.vue', '.svelte', '.astro',
+
+  // Programming & Scripting Languages
+  '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp',
+  '.cs', '.java', '.kt', '.kts', '.scala', '.swift', '.go', '.rs', '.rb', '.php',
+  '.dart', '.lua', '.r', '.m', '.jl', '.ex', '.exs', '.clj', '.erl', '.hs',
   '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-  '.html', '.css', '.scss', '.sass', '.less'
+
+  // Markup & Documentation
+  '.md', '.markdown', '.tex', '.rst', '.adoc',
 ];
 
 const SUPPORTED_MIME_TYPES = [
