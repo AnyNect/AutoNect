@@ -54,44 +54,6 @@ let taskQueue = [];
 let commandExecutionQueue = [];
 let isCommandExecuting = false;
 
-/* ── File upload state ── */
-let attachedFiles = [];
-
-// DeepSeek supported formats (based on their UI error message)
-const SUPPORTED_EXTENSIONS = [
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
-  '.txt', '.csv', '.json', '.xml', '.yaml', '.yml',
-  '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.h', '.hpp',
-  '.go', '.rs', '.rb', '.php', '.java', '.kt', '.scala', '.swift',
-  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-  '.html', '.css', '.scss', '.sass', '.less', '.md', '.markdown', '.rst', '.tex', '.ini', '.conf', '.cfg'
-];
-
-const SUPPORTED_MIME_TYPES = [
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml',
-  'text/plain', 'text/csv', 'application/json', 'application/xml', 'text/yaml',
-  'text/x-python', 'text/javascript', 'text/typescript', 'text/jsx', 'text/tsx',
-  'text/x-c', 'text/x-c++', 'text/x-go', 'text/x-rust', 'text/x-ruby', 'text/x-php',
-  'text/x-java', 'text/x-kotlin', 'text/x-scala', 'text/x-swift',
-  'text/x-shellscript', 'application/x-bash', 'text/x-powershell',
-  'text/html', 'text/css', 'text/x-scss', 'text/x-sass', 'text/x-less'
-];
-
-function isFileSupported(file) {
-  const ext = '.' + file.name.split('.').pop().toLowerCase();
-  if (SUPPORTED_EXTENSIONS.includes(ext)) return true;
-  if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
-  return false;
-}
-
 /* ── Syntax Highlighting ── */
 marked.setOptions({
     highlight: function(code, lang) {
@@ -221,6 +183,7 @@ function enableChatNameEdit(chatId) {
             });
             if (response.ok) {
                 chat.name = newName;
+                chat.is_custom_name = 1;
                 renderChatList();
                 logger.info('Chat name updated', { chatId, name: newName });
             }
@@ -289,13 +252,22 @@ async function loadChat(chatId) {
         currentChatId = chatId;
         
         if (data.deepseek_url) {
-            fetch('/api/browser/navigate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: data.deepseek_url })
-            }).then(() => {
-                updateChatNameFromPage(chatId).then(() => loadChatList());
-            }).catch(err => logger.error('Navigation error', err));
+            // Only fetch and update the name if the chat is NOT custom
+            if (!data.is_custom_name) {
+                fetch('/api/browser/navigate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: data.deepseek_url })
+                }).then(() => {
+                    updateChatNameFromPage(chatId).then(() => loadChatList());
+                }).catch(err => logger.error('Navigation error', err));
+            } else {
+                fetch('/api/browser/navigate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: data.deepseek_url })
+                }).catch(err => logger.error('Navigation error', err));
+            }
         }
         
         chatArea.innerHTML = '';
@@ -320,13 +292,22 @@ async function loadChat(chatId) {
         scrollToBottom();
         renderChatList();
         toggleSidebar(false);
-        logger.info('Loaded chat', { chatId, messages: data.messages?.length || 0 });
+        logger.info('Loaded chat', { chatId, messages: data.messages?.length || 0, isCustom: data.is_custom_name });
     } catch (error) {
         logger.error('Error loading chat', error);
     }
 }
 
 async function newChat() {
+    // Prevent spamming: if already in a new chat, do nothing
+    if (currentChatId === null) {
+        const welcomeBubble = chatArea.querySelector('.bubble');
+        if (welcomeBubble && welcomeBubble.textContent.includes('New conversation')) {
+            logger.debug('Already in a new chat, ignoring new chat click');
+            return;
+        }
+    }
+
     currentChatId = null;
     chatArea.innerHTML = '';
     const welcomeDiv = document.createElement('div');
@@ -530,7 +511,6 @@ function executeTask(promptText) {
 }
 
 async function uploadFilesAndSend(promptText) {
-    // Upload all attached files first
     if (attachedFiles.length > 0) {
         logger.info(`Uploading ${attachedFiles.length} file(s)...`);
         for (let i = 0; i < attachedFiles.length; i++) {
@@ -551,26 +531,46 @@ async function uploadFilesAndSend(promptText) {
             } catch (e) {
                 logger.error('File upload error:', e);
                 alert(`Failed to upload ${file.name}: ${e.message}`);
-                // Optionally clear files? We'll stop sending.
-                // We'll just clear the list and continue? Better to stop and let user retry.
                 isProcessing = false;
                 sendBtn.disabled = !promptInput.value.trim();
-                // Restore files (they are still in attachedFiles)
-                // We'll not clear them, so user can retry.
-                throw e; // Stop execution
+                throw e;
             }
         }
-        // After upload, clear the file list
         attachedFiles = [];
         showAttachedFiles();
     }
 
-    // Now send the prompt
     await sendToAI(promptText);
 }
 
+// ── Helper: Wait for the chat title to change from "New chat" ──
+async function waitForTitleChange(chatId, timeout = 5000) {
+    const start = Date.now();
+    let lastTitle = '';
+    while (Date.now() - start < timeout) {
+        const title = await extractChatTitleFromPage();
+        if (title && title.trim() !== 'New chat' && title !== lastTitle) {
+            logger.info('Title changed to: "%s"', title);
+            await updateChatNameFromPage(chatId);
+            return;
+        }
+        lastTitle = title;
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    // If we time out, try one last time with the current title
+    const finalTitle = await extractChatTitleFromPage();
+    if (finalTitle && finalTitle.trim() !== 'New chat') {
+        await updateChatNameFromPage(chatId);
+    } else {
+        logger.warn('Title did not change within timeout, using current title: "%s"', finalTitle);
+        await updateChatNameFromPage(chatId); // update anyway
+    }
+}
+
+// ── Updated sendToAI ──
 async function sendToAI(promptText) {
     const chatId = currentChatId || null;
+    const isNewChat = (currentChatId === null);
     try {
         logger.debug('Sending to AI', { chatId, prompt: promptText.substring(0, 50) });
         const response = await fetch('/api/chat', {
@@ -587,6 +587,11 @@ async function sendToAI(promptText) {
             currentChatId = data.session_id;
         }
         await loadChatList();
+        // If this was a new chat, wait for the title to change and update it
+        if (isNewChat && currentChatId) {
+            await waitForTitleChange(currentChatId);
+            await loadChatList();
+        }
     } catch (error) {
         logger.error('AI request failed', error);
         removeLoading();
@@ -1187,7 +1192,7 @@ async function handleAllow(card, onComplete = null) {
     
     let collectedOutput = '';
     let exitCode = -1;
-    let outputId = null;   // <-- capture output_id from exit message
+    let outputId = null;
 
     ws.onmessage = async (event) => {
         if (event.data instanceof Blob) {
@@ -1211,7 +1216,7 @@ async function handleAllow(card, onComplete = null) {
             if (msg.type === 'exit') {
                 exitCode = msg.code;
                 if (msg.output) collectedOutput = msg.output;
-                outputId = msg.output_id || null;   // <-- store output_id
+                outputId = msg.output_id || null;
                 ws.close();
                 logger.info('Command exited', { exitCode, outputLength: collectedOutput.length, outputId });
             } else if (msg.type === 'error') {
@@ -1263,7 +1268,6 @@ async function handleAllow(card, onComplete = null) {
         card.classList.remove('expanded');
         updateCommandCardTitle(card);
 
-        // ── Updated sendSingleFeedback with output_id ──
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
                 logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code, chatId: currentChatId, outputId });
@@ -1276,7 +1280,7 @@ async function handleAllow(card, onComplete = null) {
                         stderr: '',
                         exit_code: code,
                         chat_id: currentChatId,
-                        output_id: outputId   // <-- pass output_id
+                        output_id: outputId
                     }),
                 });
                 if (fbResponse.ok) {
@@ -1298,7 +1302,6 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                // ── Pass output_id to batch feedback ──
                 sendBatchFeedback(group.outputs, group.chat_id, outputId);
             }
         } else {
@@ -1351,6 +1354,42 @@ async function handleAllow(card, onComplete = null) {
    File upload UI helpers
    ═══════════════════════════════════════════════════════════════ */
 
+const SUPPORTED_EXTENSIONS = [
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
+  '.txt', '.csv', '.json', '.xml', '.yaml', '.yml',
+  '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.h', '.hpp',
+  '.go', '.rs', '.rb', '.php', '.java', '.kt', '.scala', '.swift',
+  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
+  '.html', '.css', '.scss', '.sass', '.less'
+];
+
+const SUPPORTED_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml',
+  'text/plain', 'text/csv', 'application/json', 'application/xml', 'text/yaml',
+  'text/x-python', 'text/javascript', 'text/typescript', 'text/jsx', 'text/tsx',
+  'text/x-c', 'text/x-c++', 'text/x-go', 'text/x-rust', 'text/x-ruby', 'text/x-php',
+  'text/x-java', 'text/x-kotlin', 'text/x-scala', 'text/x-swift',
+  'text/x-shellscript', 'application/x-bash', 'text/x-powershell',
+  'text/html', 'text/css', 'text/x-scss', 'text/x-sass', 'text/x-less'
+];
+
+function isFileSupported(file) {
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (SUPPORTED_EXTENSIONS.includes(ext)) return true;
+  if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
+  return false;
+}
+
+let attachedFiles = [];
+
 function showAttachedFiles() {
     const container = document.getElementById('attached-files');
     if (!container) return;
@@ -1364,14 +1403,12 @@ function showAttachedFiles() {
         `<span class="file-chip">${escapeHtml(file.name)} (${(file.size / 1024).toFixed(1)} KB) <span class="remove-file" data-index="${index}">&times;</span></span>`
     ).join('');
 
-    // Attach click handlers for remove
     container.querySelectorAll('.remove-file').forEach(el => {
         el.addEventListener('click', function() {
             const idx = parseInt(this.dataset.index, 10);
             if (!isNaN(idx)) {
                 attachedFiles.splice(idx, 1);
                 showAttachedFiles();
-                // Reset the file input so the same file can be selected again if needed
                 const fileInput = document.getElementById('file-input');
                 if (fileInput) fileInput.value = '';
             }
@@ -1379,7 +1416,6 @@ function showAttachedFiles() {
     });
 }
 
-// ── File input handler ──
 const fileInput = document.getElementById('file-input');
 if (fileInput) {
     fileInput.addEventListener('change', function(e) {
@@ -1389,17 +1425,15 @@ if (fileInput) {
                 alert(`File "${file.name}" is not supported. Supported formats: PDF, DOC, XLSX, PPT, images, text, and code.`);
                 continue;
             }
-            // Avoid duplicates (by name + size)
             const exists = attachedFiles.some(f => f.name === file.name && f.size === file.size);
             if (!exists) {
                 attachedFiles.push(file);
             }
         }
         showAttachedFiles();
-        this.value = ''; // Reset so same file can be selected again
+        this.value = '';
     });
 
-    // Drag and drop on the upload button
     const label = document.getElementById('file-upload-btn');
     if (label) {
         let dragCounter = 0;
@@ -1440,7 +1474,6 @@ if (fileInput) {
                 if (fileInput) fileInput.value = '';
             }
         });
-        // Keyboard: Enter/Space on label opens file picker
         label.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();

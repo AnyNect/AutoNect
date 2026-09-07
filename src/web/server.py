@@ -327,7 +327,6 @@ async def chat(request: ChatRequest):
 async def ai_feedback(request: AIFeedbackRequest):
     logger.info("AI feedback request received")
 
-    # Get stdout from cache if available
     stdout = request.stdout or ""
     if not stdout and request.output_id:
         cached = _output_cache.pop(request.output_id, None)
@@ -345,11 +344,9 @@ async def ai_feedback(request: AIFeedbackRequest):
     loop = asyncio.get_running_loop()
 
     def send_wrapped_and_get():
-        # Determine stdout and command for potential file upload
         stdout_content = stdout
         command_display = request.command or ""
 
-        # If we have batch commands and no stdout_content, combine them
         if request.commands and not stdout_content:
             combined_output = ""
             combined_command = ""
@@ -366,12 +363,10 @@ async def ai_feedback(request: AIFeedbackRequest):
                 stdout_content = combined_output
                 command_display = combined_command or "multiple commands"
             else:
-                # Not large, send as normal wrapped output
                 wrapped = build_wrapped_commands_output(request.commands)
                 provider.send_prompt(wrapped)
                 return provider.get_response()
 
-        # Handle large stdout content (single or combined)
         if stdout_content and len(stdout_content) > OUTPUT_FILE_THRESHOLD:
             temp_file = TMP_DIR / f"output_{uuid.uuid4().hex[:8]}.txt"
             try:
@@ -391,7 +386,6 @@ async def ai_feedback(request: AIFeedbackRequest):
                 logger.error("Failed to upload output file: %s", e)
                 truncated = stdout_content[:1000] + "...\n[Output truncated, too large to include]"
                 if request.commands:
-                    # fallback: send truncated combined output
                     wrapped = f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display}\nstdout:\n{truncated}\n[/SYSTEM_COMMAND_OUTPUT]"
                 else:
                     wrapped = build_wrapped_command_output(
@@ -405,7 +399,6 @@ async def ai_feedback(request: AIFeedbackRequest):
                 except Exception:
                     pass
         else:
-            # normal flow
             if request.commands:
                 wrapped = build_wrapped_commands_output(request.commands)
             else:
