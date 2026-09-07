@@ -100,8 +100,8 @@ PACKS = [
             {"pattern": r"rm\s+-rf\s+\.cache", "severity": Severity.MEDIUM, "reason": "Removing .cache"},
             {"pattern": r"rm\s+-rf\s+\.bash_history", "severity": Severity.MEDIUM, "reason": "Removing .bash_history"},
 
-            # Find-based deletions
-            {"pattern": r"find\s+.*\s+-exec\s+rm\s+", "severity": Severity.CRITICAL, "reason": "Find -exec rm"},
+            # Find-based deletions (UPDATED PATTERN)
+            {"pattern": r"find\s+.*\s+-exec\s+rm\s+[^-]", "severity": Severity.CRITICAL, "reason": "Find -exec rm"},
             {"pattern": r"find\s+.*-delete", "severity": Severity.CRITICAL, "reason": "Find -delete"},
 
             # Xargs with rm

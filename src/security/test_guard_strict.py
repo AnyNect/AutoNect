@@ -542,6 +542,14 @@ SAFE_REDIRECTIONS = [
     'sort < /tmp/command-guard-safe.txt',
 ]
 
+UNSAFE_FIND_EXEC = [
+    'find / -type f -iname "*autonect*.md" -exec rm -v {} \\;',
+    'find . -name "*.tmp" -exec rm -f {} \\;',
+    'find /home -type f -exec rm {} \\;',
+    'find /var/log -name "*.log" -exec rm -rf {} \\;',
+    'find /tmp -mindepth 1 -exec rm -r {} \\;',
+]
+
 
 # ============================================================
 # CATEGORY REGISTRY
@@ -593,6 +601,7 @@ ADVANCED_UNSAFE_CATEGORIES = {
     "unicode": UNSAFE_UNICODE,
     "comment_disguise": UNSAFE_COMMENT_DISGUISES,
     "shell_environment": UNSAFE_SHELL_ENV,
+    "find_exec": UNSAFE_FIND_EXEC,
 }
 
 ADVANCED_SAFE_CATEGORIES = {

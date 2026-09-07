@@ -292,6 +292,10 @@ class SecurityPolicy:
         if re.search(r'find\s+.*-delete', stripped, re.DOTALL):
             return Decision.DENY, {"reason": "Destructive find -delete"}
 
+        # NEW: Find -exec rm (any variant)
+        if re.search(r'find\s+.*\s+-exec\s+rm\s+', stripped, re.DOTALL):
+            return Decision.DENY, {"reason": "Find -exec rm destructive"}
+
         if re.search(r'(?:echo|printf)\s+.*\|\s*(?:sh|bash)\b', original, re.DOTALL):
             if not re.search(r'\|\s*(?:sh|bash)\s+-n\b', original, re.DOTALL):
                 if not re.search(r'\|\s*(?:sh|bash)\s+-c\s+.*echo', original, re.DOTALL):
