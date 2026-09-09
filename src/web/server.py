@@ -678,6 +678,7 @@ async def websocket_execute(websocket: WebSocket):
     loop = asyncio.get_running_loop()
     output_chunks = []
     exit_status = None
+    signal_info = None
 
     reader_queue = asyncio.Queue()
 
@@ -694,10 +695,25 @@ async def websocket_execute(websocket: WebSocket):
     loop.add_reader(master_fd, pty_reader_callback)
 
     async def wait_for_exit():
-        nonlocal exit_status
-        _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
-        exit_status = os.waitstatus_to_exitcode(status)
-        logger.info("Process %d exited with status %d", pid, exit_status)
+        nonlocal exit_status, signal_info
+        pid_status = await loop.run_in_executor(None, os.waitpid, pid, 0)
+        pid, status = pid_status
+        if os.WIFSIGNALED(status):
+            signum = os.WTERMSIG(status)
+            exit_status = -signum
+            # Map signal number to name
+            try:
+                sig_name = signal.Signals(signum).name
+            except (ValueError, AttributeError):
+                sig_name = f"signal {signum}"
+            signal_info = {
+                "signum": signum,
+                "name": sig_name
+            }
+            logger.info("Process %d was terminated by signal %d (%s)", pid, signum, sig_name)
+        else:
+            exit_status = os.WEXITSTATUS(status)
+            logger.info("Process %d exited with status %d", pid, exit_status)
         return exit_status
 
     async def read_pty():
@@ -773,13 +789,23 @@ async def websocket_execute(websocket: WebSocket):
     _output_cache[output_id] = final_output
     logger.info("Cached stdout with output_id %s (length: %s)", output_id, len(final_output))
 
-    logger.info("Sending exit message with code %d", exit_status if exit_status is not None else -1)
-    await websocket.send_text(json.dumps({
+    # Build exit message
+    exit_msg = {
         "type": "exit",
         "code": exit_status if exit_status is not None else -1,
         "output": final_output,
         "output_id": output_id
-    }))
+    }
+    if signal_info:
+        exit_msg["signal"] = signal_info["signum"]
+        exit_msg["signal_name"] = signal_info["name"]
+        exit_msg["message"] = f"Process terminated by signal {signal_info['signum']} ({signal_info['name']})"
+        logger.info("Sending exit message: %s", exit_msg["message"])
+    else:
+        exit_msg["message"] = f"Process exited with code {exit_status}" if exit_status is not None else "Unknown exit"
+        logger.info("Sending exit message: %s", exit_msg["message"])
+
+    await websocket.send_text(json.dumps(exit_msg))
 
     await websocket.close()
 
