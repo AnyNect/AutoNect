@@ -694,6 +694,251 @@ async def websocket_execute(websocket: WebSocket):
 
     loop.add_reader(master_fd, pty_reader_callback)
 
+    # ── Fix: pass pid as argument to avoid scope issues ──
+    async def wait_for_exit(pid):
+        nonlocal exit_status, signal_info
+        pid_status = await loop.run_in_executor(None, os.waitpid, pid, 0)
+        _, status = pid_status
+        if os.WIFSIGNALED(status):
+            signum = os.WTERMSIG(status)
+            exit_status = -signum
+            try:
+                sig_name = signal.Signals(signum).name
+            except (ValueError, AttributeError):
+                sig_name = f"signal {signum}"
+            signal_info = {
+                "signum": signum,
+                "name": sig_name
+            }
+            logger.info("Process %d terminated by signal %d (%s)", pid, signum, sig_name)
+        else:
+            exit_status = os.WEXITSTATUS(status)
+            logger.info("Process %d exited with status %d", pid, exit_status)
+        return exit_status
+
+    async def read_pty():
+        while True:
+            try:
+                data = await reader_queue.get()
+            except asyncio.CancelledError:
+                break
+            if data is None:
+                logger.debug("Reader received EOF")
+                break
+            output_chunks.append(data)
+            try:
+                await websocket.send_bytes(data)
+            except (WebSocketDisconnect, RuntimeError):
+                logger.warning("WebSocket closed during send_bytes, stopping read")
+                break
+
+    async def write_ws_to_pty():
+        try:
+            while True:
+                try:
+                    msg = await websocket.receive()
+                except WebSocketDisconnect:
+                    logger.info("WebSocket disconnected during receive")
+                    break
+                if "text" in msg:
+                    try:
+                        obj = json.loads(msg["text"])
+                    except json.JSONDecodeError:
+                        try:
+                            os.write(master_fd, msg["text"].encode())
+                        except OSError:
+                            break
+                        continue
+
+                    if obj.get("type") == "resize":
+                        cols = obj.get("cols", 80)
+                        rows = obj.get("rows", 24)
+                        try:
+                            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                        except OSError as e:
+                            logger.error("Resize error: %s", e)
+                    elif obj.get("type") == "signal":
+                        sig = getattr(signal, obj.get("signal", ""), None)
+                        if sig and pid > 0:
+                            try:
+                                os.killpg(pid, sig)
+                            except OSError as e:
+                                logger.error("Signal error: %s", e)
+                    elif obj.get("type") == "stdin":
+                        try:
+                            os.write(master_fd, obj["data"].encode())
+                        except OSError:
+                            break
+                elif "bytes" in msg:
+                    try:
+                        os.write(master_fd, msg["bytes"])
+                    except OSError:
+                        break
+        except WebSocketDisconnect:
+            logger.info("WebSocket disconnected during write")
+        except Exception as e:
+            logger.exception("Unexpected error in write_ws_to_pty: %s", e)
+        finally:
+            # Cancel the reader task when writer stops (cleanup)
+            reader_task.cancel()
+
+    reader_task = asyncio.create_task(read_pty())
+    writer_task = asyncio.create_task(write_ws_to_pty())
+    exit_task = asyncio.create_task(wait_for_exit(pid))
+
+    # Wait for either the process to exit or the WebSocket to disconnect
+    done, pending = await asyncio.wait(
+        [exit_task, writer_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+
+    # Cancel the remaining tasks
+    for task in pending:
+        task.cancel()
+
+    # Clean up reader
+    loop.remove_reader(master_fd)
+    reader_queue.put_nowait(None)  # signal EOF to reader
+
+    # Wait a bit for reader to finish
+    try:
+        await asyncio.wait_for(reader_task, timeout=1)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+    # Wait for exit_task if it wasn't done
+    if exit_task not in done:
+        try:
+            await exit_task
+        except Exception:
+            pass
+
+    final_output = b"".join(output_chunks).decode(errors="replace")
+
+    output_id = uuid.uuid4().hex
+    _output_cache[output_id] = final_output
+    logger.info("Cached stdout with output_id %s (length: %s)", output_id, len(final_output))
+
+    exit_msg = {
+        "type": "exit",
+        "code": exit_status if exit_status is not None else -1,
+        "output": final_output,
+        "output_id": output_id
+    }
+    if signal_info:
+        exit_msg["signal"] = signal_info["signum"]
+        exit_msg["signal_name"] = signal_info["name"]
+        exit_msg["message"] = f"Process terminated by signal {signal_info['signum']} ({signal_info['name']})"
+    else:
+        exit_msg["message"] = f"Process exited with code {exit_status}" if exit_status is not None else "Unknown exit"
+
+    logger.info("Sending exit message: %s", exit_msg["message"])
+    try:
+        await websocket.send_text(json.dumps(exit_msg))
+    except (WebSocketDisconnect, RuntimeError):
+        logger.warning("Could not send exit message, client already disconnected")
+
+    await websocket.close()
+
+    try:
+        os.close(master_fd)
+    except OSError as e:
+        logger.error("Error closing master fd: %s", e)
+    await websocket.accept()
+    logger.info("WebSocket connection accepted")
+
+    try:
+        init_msg = await websocket.receive_text()
+        logger.debug("WebSocket init message received: %s", init_msg[:200])
+    except Exception as e:
+        logger.error("Failed to receive init message: %s", e)
+        await websocket.close(code=4000, reason="Init message missing")
+        return
+
+    try:
+        cmd_data = json.loads(init_msg)
+        command = cmd_data.get("command", "")
+        session_id = cmd_data.get("session_id", "default")
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON in init message: %s", e)
+        await websocket.close(code=4000, reason="Invalid JSON")
+        return
+
+    if not command:
+        logger.warning("WebSocket connection closed: no command provided")
+        await websocket.close(code=4000, reason="No command provided")
+        return
+
+    logger.info("WebSocket command evaluation: session=%s, command=%s", session_id, command[:100])
+
+    decision, info = guard.evaluate(command, session_id)
+    if decision in ("ask", "deny"):
+        severity = "unsafe" if decision == "deny" else "unsure"
+        logger.info("Command requires user approval: %s (severity=%s)", command[:50], severity)
+        await websocket.send_text(json.dumps({
+            "type": "ask",
+            "command": command,
+            "reason": info.get("reason", ""),
+            "path": info.get("path", ""),
+            "session_id": session_id,
+            "severity": severity
+        }))
+        try:
+            approval = await websocket.receive_text()
+            data = json.loads(approval)
+            action = data.get("action")
+            path = data.get("path", "")
+            if action in ("allow_once", "allow_session"):
+                guard.approve_once(command, path)
+                if action == "allow_session":
+                    guard.approve_session(command, path)
+                logger.info("Command approved by user: action=%s", action)
+            else:
+                logger.warning("Command denied by user")
+                await websocket.send_text(json.dumps({"type": "denied", "reason": "User denied"}))
+                await websocket.close(code=4000, reason="Denied by user")
+                return
+        except Exception as e:
+            logger.error("Approval error: %s", e)
+            await websocket.send_text(json.dumps({"type": "denied", "reason": "Approval error"}))
+            await websocket.close(code=4000, reason="Approval error")
+            return
+
+    logger.info("Forking PTY for command: %s", command[:100])
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        try:
+            os.setsid()
+        except OSError:
+            pass
+        os.execvp("/bin/sh", ["/bin/sh", "-c", command])
+        os._exit(1)
+
+    logger.debug("Forked child PID: %d", pid)
+
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    loop = asyncio.get_running_loop()
+    output_chunks = []
+    exit_status = None
+    signal_info = None
+
+    reader_queue = asyncio.Queue()
+
+    def pty_reader_callback():
+        try:
+            data = os.read(master_fd, 4096)
+            if data:
+                reader_queue.put_nowait(data)
+            else:
+                reader_queue.put_nowait(None)
+        except (OSError, BlockingIOError):
+            pass
+
+    loop.add_reader(master_fd, pty_reader_callback)
+
     async def wait_for_exit():
         nonlocal exit_status, signal_info
         pid_status = await loop.run_in_executor(None, os.waitpid, pid, 0)
