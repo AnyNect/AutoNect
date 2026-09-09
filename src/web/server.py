@@ -686,6 +686,7 @@ async def websocket_execute(websocket: WebSocket):
 
     logger.debug("Forked child PID: %d", pid)
 
+    # Make PTY non-blocking
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
@@ -808,6 +809,27 @@ async def websocket_execute(websocket: WebSocket):
     for task in pending:
         task.cancel()
 
+    # ── Flush any remaining data from PTY ──
+    # After the process exits, there may still be buffered output in the PTY.
+    # We'll read until no more data is available (up to 5 attempts with 50ms delay).
+    flush_attempts = 5
+    for _ in range(flush_attempts):
+        try:
+            data = os.read(master_fd, 4096)
+            if data:
+                output_chunks.append(data)
+                try:
+                    await websocket.send_bytes(data)
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.warning("WebSocket closed during final flush")
+                    break
+            else:
+                break
+        except BlockingIOError:
+            await asyncio.sleep(0.05)
+        except OSError:
+            break
+
     loop.remove_reader(master_fd)
     reader_queue.put_nowait(None)
 
@@ -847,7 +869,6 @@ async def websocket_execute(websocket: WebSocket):
     except (WebSocketDisconnect, RuntimeError) as e:
         logger.warning("Could not send exit message: %s", e)
 
-    # Only close if the websocket is still open
     try:
         await websocket.close()
     except (WebSocketDisconnect, RuntimeError):
@@ -857,3 +878,4 @@ async def websocket_execute(websocket: WebSocket):
         os.close(master_fd)
     except OSError as e:
         logger.error("Error closing master fd: %s", e)
+
