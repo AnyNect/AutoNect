@@ -20,7 +20,7 @@
 
 AutoNect lets you talk to AI providers (starting with DeepSeek) through browser automation, then safely execute the suggested shell commands directly from the chat interface. It combines a lightweight browser controller, a modern web chat UI, and a layered security system into one cohesive tool.
 
-> **Current status:** the browser bridge and chat interface are fully working. The command‑execution layer is in place, with ongoing refinements to security and user experience.
+> **Current status:** the browser bridge, chat interface, chat history, and CLI are fully working. The command‑execution layer is in place, with ongoing refinements to security and user experience.
 
 ---
 
@@ -36,6 +36,8 @@ AutoNect lets you talk to AI providers (starting with DeepSeek) through browser 
 | **🗂️ Task Queue** | Queue up multiple prompts while the AI is generating or a command is running. Drag‑to‑reorder, edit, pause/resume. |
 | **⚡ Auto‑Allow Mode** | When enabled, commands are automatically approved (after a countdown) and queued for sequential execution – no manual clicks needed. |
 | **🖥️ Native Terminal** | "Open Terminal" button launches your preferred terminal emulator (configurable) and keeps it open after command completion. |
+| **💾 Chat History** | Persistent conversations stored in a local SQLite database. Sidebar with rename, pin, and delete. DeepSeek sessions are re‑navigated automatically when you open an old chat. |
+| **⌨️ AnyNect CLI** | Single global command (`AnyNect`) with subcommands for `start`, `setup`, `login`, `test`, and `version`. `AutoNect` remains as a backward‑compatible alias. |
 
 ---
 
@@ -89,42 +91,57 @@ User
 
 ---
 
-## 🚀 Quick Install (two commands)
+## 🚀 Quick Install (one command block)
 
 ```bash
 git clone https://github.com/AnyNect/AutoNect.git
 cd AutoNect
-chmod +x setup.sh start.sh
+chmod +x setup.sh
 ./setup.sh
-./start.sh
+source .venv/bin/activate
+AnyNect start
 ```
 
-### What each script does
+> **fish users:** replace `source .venv/bin/activate` with `source .venv/bin/activate.fish`.
+> **No‑activation alternative:** replace the last two lines with `.venv/bin/AnyNect start`.
 
-- **`setup.sh`** – one‑time setup:
-  - Checks Python version (3.10+) and creates a virtual environment.
-  - Installs all dependencies (split into `base`, `dev`, `terminal`).
-  - Installs Playwright Chromium.
-  - Detects your browser (Thorium, Chromium, or Chrome) and generates `config/settings.json`.
-  - Creates `src/ai/providers/deepseek_selectors.json` with default CSS selectors.
-  - Generates `src/prompts/system.txt` from `system_template.txt` (substituting environment variables).
-  - Creates a `User/` folder for personal AI context.
-  - Installs the package in editable mode – makes the `AutoNect` command available.
+### What the setup does
 
-- **`start.sh`** – launches the server (and handles first‑time login):
-  - Activates the virtual environment.
-  - Checks if a browser profile exists (stored in `~/.autonect/browser-profile`).
-  - If **no** profile → opens the browser for you to log in to DeepSeek once; waits for you to press Enter after logging in.
-  - If **profile exists** → skips login and starts the server immediately.
-  - Runs `AutoNect` (the server) – you see the URL in the terminal.
+`setup.sh` is idempotent — safe to run as many times as you like. It:
 
-> **💡 First‑time only:** you will be prompted to log in to DeepSeek. Your session cookies are saved, so you only need to do this once.
+- Checks Python version (3.10+) and creates `.venv` if missing.
+- Installs all dependencies (`base`, `dev`, `terminal` if Konsole is present).
+- Installs Playwright Chromium.
+- Detects your browser (Thorium, Chromium, or Chrome) and generates `config/settings.json` **only if it does not already exist**.
+- Writes `src/ai/providers/deepseek_selectors.json` with up‑to‑date CSS selectors.
+- Writes `src/web/launcher.py` (the CLI) — backed up to `.bak` if it changes.
+- Installs the package in editable mode, registering the `AnyNect` and `AutoNect` commands.
+- Creates a `User/` folder for personal AI context **only if missing**.
+- Generates `src/prompts/system.txt` from `system_template.txt` if a template exists, otherwise preserves an existing prompt.
+- Takes a single `.bak` snapshot of any generated file before overwriting it.
+
+### The `AnyNect` CLI
+
+After the one‑time setup, you have a global command:
+
+```bash
+AnyNect                     # start the server (default subcommand)
+AnyNect start --port 8099   # start on a custom port
+AnyNect start --host 0.0.0.0 --port 8000 --reload
+AnyNect login               # open DeepSeek in your browser for first-time login
+AnyNect test all            # run the full test suite
+AnyNect test config         # run just the config tests
+AnyNect setup               # re-run setup.sh (idempotent)
+AnyNect version             # print the version
+```
+
+`AutoNect` is registered as a backwards‑compatible alias for every subcommand.
 
 ---
 
 ## ⚙️ Configuration
 
-All settings are stored in `config/settings.json`. The file is created automatically by `setup.sh`.
+All settings are stored in `config/settings.json`. The file is created automatically by `setup.sh` — and **never overwritten if it already exists**, so your customisations survive re‑runs.
 
 ### Server settings
 
@@ -217,7 +234,7 @@ All settings are stored in `config/settings.json`. The file is created automatic
 
 ### DeepSeek CSS selectors
 
-The file `src/ai/providers/deepseek_selectors.json` contains all selectors used to interact with the DeepSeek UI. You can update it if DeepSeek changes its layout:
+The file `src/ai/providers/deepseek_selectors.json` contains all selectors used to interact with the DeepSeek UI. It is regenerated by `setup.sh` each time it runs (with a `.bak` snapshot if the contents change), so it stays up to date when DeepSeek ships UI updates:
 
 ```json
 {
@@ -228,9 +245,13 @@ The file `src/ai/providers/deepseek_selectors.json` contains all selectors used 
   "assistant_container": ".ds-assistant-message-main-content",
   "language_tag": ".d813de27",
   "code_block": ".md-code-block",
-  "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)"
+  "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)",
+  "file_input": "input[type=\"file\"]",
+  "chat_title": "#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div"
 }
 ```
+
+The `chat_title` selector is used by the frontend to read the current DeepSeek chat name and sync it to your local chat history. The frontend applies a fallback chain in `script.js` (see `extractChatTitleFromPage`) so a single selector change on DeepSeek's side does not break chat naming.
 
 ---
 
@@ -254,7 +275,7 @@ AutoNect/
 │   │   ├── provider.py            # Abstract AI provider interface
 │   │   └── providers/
 │   │       ├── deepseek.py        # DeepSeek provider (Playwright)
-│   │       └── deepseek_selectors.json  # CSS selectors (configurable)
+│   │       └── deepseek_selectors.json  # CSS selectors (regenerated at setup)
 │   │
 │   ├── browser/
 │   │   ├── manager.py             # Browser lifecycle (Thorium/Chromium)
@@ -263,12 +284,15 @@ AutoNect/
 │   ├── core/
 │   │   └── config.py              # JSON config loader
 │   │
+│   ├── database/                  # SQLite chat history
+│   │   └── __init__.py            # upsert_chat, add_message, get_chat, ...
+│   │
 │   ├── parser/
 │   │   └── commands.py            # Extract ```command blocks from text
 │   │
 │   ├── prompts/
 │   │   ├── system_template.txt    # Template for system prompt (substituted at setup)
-│   │   ├── system.txt             # Generated system prompt (ignored by Git)
+│   │   ├── system.txt             # Generated system prompt (preserved on re-run)
 │   │   └── system_restricted.txt  # Restricted system prompt
 │   │
 │   ├── security/
@@ -289,7 +313,7 @@ AutoNect/
 │   │   └── test_guard_strict.py   # Strict pass/fail harness
 │   │
 │   ├── web/
-│   │   ├── launcher.py            # Entry point for the AutoNect command
+│   │   ├── launcher.py            # AnyNect CLI entry point (installed by setup)
 │   │   ├── server.py              # FastAPI app + WebSocket endpoint
 │   │   ├── templates/
 │   │   │   └── index.html         # Chat UI
@@ -314,9 +338,8 @@ AutoNect/
 │   └── context.md
 ├── .gitignore                     # Updated to ignore User/, prompts, logs
 ├── README.md                      # This file
-├── setup.py                       # Package installer (creates AutoNect command)
-├── setup.sh                       # One‑command setup script
-├── start.sh                       # One‑command start script (login + server)
+├── setup.py                       # Package installer (registers AnyNect + AutoNect)
+├── setup.sh                       # One‑command setup script (idempotent)
 ├── generate_prompt.sh             # Environment detection script
 └── LICENSE                        # MIT License
 ```
@@ -325,25 +348,20 @@ AutoNect/
 
 ## 🧪 Testing
 
-All tests are in the `tests/` directory. Run them from the project root:
+All tests are in the `tests/` directory. Run them from the project root, or use the CLI wrapper:
 
 ```bash
-# Test configuration loader
+# Using the CLI (recommended)
+AnyNect test all
+AnyNect test config
+AnyNect test browser
+
+# Direct module invocation
 python -m tests.test_config
-
-# Launch browser (for login) – use if you need to re‑log in
-python -m tests.test_browser
-
-# Test Markdown rendering with a comprehensive prompt
+python -m tests.test_browser           # also useful for re-login
 python -m tests.test_markdown
-
-# Test command extraction
 python -m tests.test_commands
-
-# Test DeepSeek provider with two‑turn conversation
 python -m tests.test_deepseek
-
-# Diagnostic test for DOM mutations
 python -m tests.test_deepseek_diagnostic
 ```
 
@@ -368,6 +386,15 @@ python -m src.security.test_guard_strict
   - **Allow** / **Decline** buttons
   - **Open Terminal** – launches your configured terminal emulator (or fallback)
   - On Allow: live terminal output via WebSocket, then AI feedback analysis
+  - Exit codes are recovered from the WebSocket close frame if the in‑band exit message is lost in transit, so `-1` placeholders are never reported for successful commands
+
+### Chat History
+
+- Persistent conversations stored in a local SQLite database.
+- Sidebar with **rename**, **pin**, and **delete** for each chat.
+- Reopening an old chat re‑navigates the browser to the saved DeepSeek URL.
+- Titles are synced from the DeepSeek UI via the `chat_title` selector chain.
+- Custom titles are preserved across syncs (`is_custom_name` flag).
 
 ### Task Queue
 
@@ -376,6 +403,7 @@ python -m src.security.test_guard_strict
 - **Double‑click a task** to edit it.
 - **Pause / Resume** – temporarily stop the queue from processing.
 - **Cancel** – remove a task from the queue.
+- Messages are queued while **any** command in the current group is still executing — not just while the AI is thinking. The queue drains exactly once, after the last command of the group finishes.
 
 ### Auto‑Allow Mode
 
@@ -422,8 +450,10 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 | **Markdown cleaning** | Custom regex pipeline |
 | **Security** | AST parsing (Python), regex pattern matching, obfuscation decoders |
 | **Terminal** | pty.fork() + WebSockets + xterm.js |
+| **Chat history** | SQLite |
 | **Logging** | Python `logging` with rotating file handler |
 | **Dependency management** | `dependencies/` folder with split `base`, `dev`, `terminal` |
+| **CLI** | `argparse` + setuptools console_scripts |
 
 ---
 
@@ -433,14 +463,17 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 - [x] Native terminal integration (configurable emulator)
 - [x] Professional logging across all modules
 - [x] CSS cleanup and UI polish
-- [x] One‑command setup script
-- [x] One‑command start script (login + server)
+- [x] One‑command setup script (idempotent)
 - [x] Moved tests into `tests/` directory
-- [x] Global `AutoNect` command and configurable port
+- [x] Global `AnyNect` command (with `AutoNect` alias) and configurable port
 - [x] Configurable WebSocket output limit and terminal command
 - [x] CSS selectors moved to external JSON file
 - [x] AI response timeout and base URL configurable
-- [ ] **Chat history** – persistent conversations using `localStorage` (next feature)
+- [x] **Chat history** – persistent conversations in SQLite with rename, pin, delete
+- [x] Fixed SIGTERM self‑kill (`-15`) in PTY command executor
+- [x] Fixed dropped exit codes when the WebSocket writer finishes first
+- [x] Chat title sync from DeepSeek UI
+- [x] Queue no longer bypasses during command execution
 - [ ] User authentication and session management
 - [ ] Support for more terminal emulators out‑of‑the‑box
 - [ ] Cross‑platform support (Windows, macOS)

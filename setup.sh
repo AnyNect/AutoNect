@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-set -e
+#
+# AnyNect — idempotent, bulletproof setup script.
+#
+# Safe to run repeatedly. Preserves user data (config, system prompt,
+# user notes). Only regenerates files that are script-owned.
+#
+set -euo pipefail
 
 # ── Colour output ──
 RED='\033[0;31m'
@@ -8,102 +14,116 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-function info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+function info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 function success() { echo -e "${GREEN}[OK]${NC} $1"; }
-function warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-function error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+function warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+function error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# ── Resolve repo root so the script works from anywhere ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ── Helper: write a file only if its content would change ──
+# Usage: atomic_write <path> <<'EOF' ... EOF
+# Backs up the old file to <path>.bak once, only when content differs.
+atomic_write() {
+    local target="$1"
+    local new_content
+    new_content="$(cat)"
+    if [[ -f "$target" ]] && [[ "$(cat "$target")" == "$new_content" ]]; then
+        info "$(basename "$target") unchanged — skipping."
+        return 0
+    fi
+    if [[ -f "$target" ]]; then
+        cp "$target" "${target}.bak"
+        info "Backed up $(basename "$target") → $(basename "$target").bak"
+    fi
+    printf '%s\n' "$new_content" > "$target"
+    success "Wrote $target"
+}
 
 # ── Check prerequisites ──
 info "Checking prerequisites..."
 
 if ! command -v python3 &> /dev/null; then
-    error "Python3 not found. Please install Python 3.10 or later."
+    error "python3 not found. Install Python 3.10 or later."
 fi
-PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if [[ $(echo "$PY_VER < 3.10" | bc) -eq 1 ]]; then
+
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+    PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
     error "Python $PY_VER detected, but 3.10+ is required."
 fi
+PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 success "Python $PY_VER found."
 
 if ! command -v git &> /dev/null; then
-    warn "Git not found – you might need it to clone the repository."
+    warn "git not found — you may need it to update the repository."
 fi
 
-# ── Detect and set browser ──
+# ── Detect browser ──
 info "Detecting browser..."
 BROWSER_CMD=""
 if command -v thorium-browser &> /dev/null; then
-    BROWSER_CMD="thorium-browser"
-    success "Thorium found."
+    BROWSER_CMD="thorium-browser"; success "Thorium found."
 elif command -v chromium &> /dev/null; then
-    BROWSER_CMD="chromium"
-    success "Chromium found (will be used as fallback)."
+    BROWSER_CMD="chromium"; success "Chromium found."
 elif command -v google-chrome &> /dev/null; then
-    BROWSER_CMD="google-chrome"
-    warn "Chrome found – Playwright may not work perfectly; consider using Thorium or Chromium."
+    BROWSER_CMD="google-chrome"; warn "Chrome found — consider Thorium/Chromium for best Playwright compatibility."
 elif command -v chrome &> /dev/null; then
-    BROWSER_CMD="chrome"
-    warn "Chrome found – Playwright may not work perfectly; consider using Thorium or Chromium."
+    BROWSER_CMD="chrome"; warn "Chrome found — consider Thorium/Chromium."
 else
-    warn "No supported browser found. We'll attempt to install Chromium via Playwright (headless only) but for headed mode you need a GUI browser."
-    info "You can install Thorium from https://thorium.rocks or install Chromium via your package manager."
+    warn "No supported browser found."
+    info "Install Thorium (https://thorium.rocks) or Chromium via your package manager."
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        error "Install a browser and run this script again."
+        error "Install a browser and re-run."
     fi
 fi
 
-# ── Create virtual environment ──
-if [ -d ".venv" ]; then
-    info "Virtual environment already exists, skipping creation."
+# ── Virtual environment ──
+if [ -d ".venv" ] && [ -f ".venv/bin/activate" ]; then
+    info "Virtual environment already exists."
 else
     info "Creating virtual environment..."
     python3 -m venv .venv
     success "Virtual environment created."
 fi
 
+# shellcheck disable=SC1091
 source .venv/bin/activate
 
 # ── Upgrade pip ──
 info "Upgrading pip..."
-pip install --upgrade pip
+pip install --quiet --upgrade pip
 
-# ── Install base dependencies ──
+# ── Base dependencies ──
 info "Installing base dependencies..."
 if [ -f "dependencies/base.txt" ]; then
-    pip install -r dependencies/base.txt
+    pip install --quiet -r dependencies/base.txt
+elif [ -f "requirements.txt" ]; then
+    warn "dependencies/base.txt not found — using requirements.txt."
+    pip install --quiet -r requirements.txt
 else
-    warn "dependencies/base.txt not found – using requirements.txt (legacy)"
-    if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt
-    else
-        error "Neither dependencies/base.txt nor requirements.txt found."
-    fi
+    error "Neither dependencies/base.txt nor requirements.txt found."
 fi
 
-# ── Install dev dependencies (optional) ──
+# ── Dev dependencies (optional) ──
 if [ -f "dependencies/dev.txt" ]; then
-    info "Installing development dependencies..."
-    pip install -r dependencies/dev.txt
+    info "Installing dev dependencies..."
+    pip install --quiet -r dependencies/dev.txt
 fi
 
-# ── Install terminal extras if Konsole is present ──
-if command -v konsole &> /dev/null; then
-    info "Konsole detected – installing terminal extras."
-    if [ -f "dependencies/terminal.txt" ]; then
-        pip install -r dependencies/terminal.txt
-    else
-        warn "terminal.txt not found; skipping."
-    fi
-else
-    warn "Konsole not found – native terminal integration will be disabled."
+# ── Terminal extras (optional) ──
+if command -v konsole &> /dev/null && [ -f "dependencies/terminal.txt" ]; then
+    info "Konsole detected — installing terminal extras."
+    pip install --quiet -r dependencies/terminal.txt
 fi
 
-# ── Ensure setup.py exists ──
+# ── setup.py (script-owned, generated if missing) ──
 if [ ! -f "setup.py" ]; then
-    warn "setup.py not found, creating minimal one..."
-    cat > setup.py <<'EOF'
+    info "Generating setup.py..."
+    cat > setup.py <<'PYEOF'
 from setuptools import setup, find_packages
 
 setup(
@@ -128,23 +148,14 @@ setup(
     description="Autonomous AI–Shell bridge",
     python_requires=">=3.10",
 )
-EOF
-    success "Created setup.py"
+PYEOF
+    success "setup.py created."
 fi
 
-# ── Launcher ──
-# The launcher is a generated file — always write the latest version so
-# upgrades (including new subcommands) land reliably. A timestamped backup
-# is taken if the file already exists so user edits are never lost.
-if [ -f "src/web/launcher.py" ]; then
-    BACKUP="src/web/launcher.py.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "src/web/launcher.py" "$BACKUP"
-    info "Existing launcher.py backed up to $BACKUP"
-fi
-
+# ── launcher.py (script-owned, always written) ──
 mkdir -p src/web
-info "Writing launcher.py (AnyNect CLI)..."
-cat > src/web/launcher.py <<'EOF'
+info "Writing launcher.py..."
+atomic_write "src/web/launcher.py" <<'PYEOF'
 #!/usr/bin/env python3
 """AnyNect CLI — global entry point for AutoNect.
 
@@ -153,13 +164,14 @@ through setup.py's entry_points. `AutoNect` is kept as a backward-compat
 alias pointing at the same `main` function.
 
 Subcommands:
-    start   (default)  start the AutoNect web server
+    start   (default)  start the AnyNect web server
     setup              run setup.sh to install/repair dependencies
     login              open DeepSeek in the default browser
     test [target]      run tests (all | config | browser)
     version            print the version
 """
 import argparse
+import os
 import subprocess
 import sys
 import webbrowser
@@ -192,8 +204,13 @@ def cmd_start(args):
     host = args.host if args.host is not None else config.get("server", "host", default="127.0.0.1")
     reload = args.reload if args.reload is not None else config.get("server", "reload", default=False)
 
+    # Propagate host/port to the server process so the startup banner
+    # reflects the actual values instead of hardcoded defaults.
+    os.environ["AUTONECT_HOST"] = str(host)
+    os.environ["AUTONECT_PORT"] = str(port)
+
     import uvicorn
-    print(f"🚀 Starting AutoNect on http://{host}:{port}")
+    print(f"🚀 Starting AnyNect on http://{host}:{port}")
     uvicorn.run(
         "src.web.server:app",
         host=host,
@@ -282,18 +299,19 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-EOF
-success "launcher.py written."
+PYEOF
 
-# ── Install package in editable mode ──
-info "Installing AutoNect package in editable mode..."
-pip install -e .
+# ── Editable install (registers AnyNect / AutoNect) ──
+info "Installing AnyNect package in editable mode..."
+pip install --quiet -e .
 
-# ── Install Playwright browsers ──
-info "Installing Playwright Chromium (headless)..."
-playwright install chromium
+# ── Playwright browser ──
+if python -c "import playwright" 2>/dev/null; then
+    info "Ensuring Playwright Chromium is installed..."
+    python -m playwright install chromium 2>&1 | grep -vE '^BEWARE:' || true
+fi
 
-# ── Generate configuration if missing ──
+# ── config/settings.json (user-owned, never overwritten) ──
 if [ ! -f "config/settings.json" ]; then
     info "Creating default config/settings.json..."
     mkdir -p config
@@ -331,24 +349,16 @@ if [ ! -f "config/settings.json" ]; then
   }
 }
 EOF
-    success "Default config created at config/settings.json."
+    success "Default config written to config/settings.json."
 else
-    info "config/settings.json already exists – skipping."
+    info "config/settings.json exists — keeping user settings."
 fi
 
-# ── DeepSeek selectors ──
-# This file tracks DeepSeek's web UI. It is generated, not user-owned, so we
-# always write the current version. A backup is taken if one exists.
+# ── DeepSeek selectors (script-owned, always written) ──
 SELECTORS_FILE="src/ai/providers/deepseek_selectors.json"
 mkdir -p "$(dirname "$SELECTORS_FILE")"
-if [ -f "$SELECTORS_FILE" ]; then
-    BACKUP="${SELECTORS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "$SELECTORS_FILE" "$BACKUP"
-    info "Existing selectors backed up to $BACKUP"
-fi
-
-info "Writing DeepSeek selectors (including chat_title)..."
-cat > "$SELECTORS_FILE" <<'EOF'
+info "Writing DeepSeek selectors..."
+atomic_write "$SELECTORS_FILE" <<'JSONEOF'
 {
   "textarea": "textarea[placeholder=\"Message DSeek\"]",
   "send_button": "div[role=\"button\"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)",
@@ -361,18 +371,17 @@ cat > "$SELECTORS_FILE" <<'EOF'
   "file_input": "input[type=\"file\"]",
   "chat_title": "#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div"
 }
-EOF
-success "DeepSeek selectors written to $SELECTORS_FILE."
+JSONEOF
 
-# ── Create User directory with placeholders ──
+# ── User directory (user-owned, never overwritten) ──
 if [ ! -d "User" ]; then
-    info "Creating User directory with placeholders..."
+    info "Initialising User directory..."
     mkdir -p User
-    cat > User/README.md <<EOF
+    cat > User/README.md <<'EOF'
 # User Directory
 
-This directory is for your personal notes, journals, and project context.
-All files here are ignored by Git – feel free to store anything you want to share with the AI.
+This directory holds your personal notes, journals, and project context.
+All files here are ignored by Git — store anything you want to share with the AI.
 
 Examples:
 - notes.md
@@ -380,95 +389,66 @@ Examples:
 - plans.md
 - context.md
 EOF
-    echo "# Personal notes" > User/notes.md
-    echo "# Journal" > User/journal.md
-    echo "# Plans" > User/plans.md
-    echo "# Project context" > User/context.md
+    echo "# Personal notes"   > User/notes.md
+    echo "# Journal"          > User/journal.md
+    echo "# Plans"            > User/plans.md
+    echo "# Project context"  > User/context.md
     success "User directory initialised."
 else
-    info "User directory already exists – skipping."
+    info "User directory exists — keeping contents."
 fi
 
-# ── Generate system prompt from template ──
-info "Generating system prompt from template..."
+# ── System prompt (user-owned unless a template is present) ──
 TEMPLATE_FILE="src/prompts/system_template.txt"
 OUTPUT_FILE="src/prompts/system.txt"
+mkdir -p src/prompts
 
 if [ -f "$TEMPLATE_FILE" ]; then
-    # Detect environment variables
+    info "Generating system prompt from template..."
+
     OS=$(uname -s)
     KERNEL=$(uname -r)
     ARCH=$(uname -m)
-    SHELL=$(basename "$SHELL")
+    SHELL_NAME=$(basename "${SHELL:-bash}")
     TERM=${TERM:-unknown}
-    USER=${USER:-$(whoami)}
-    HOME=${HOME:-$HOME}
-    LANG=${LANG:-en_US.UTF-8}
+    USER_NAME=${USER:-$(whoami)}
+    HOME_DIR=${HOME:-$HOME}
+    LANG_VALUE=${LANG:-en_US.UTF-8}
 
-    # Package manager detection
-    if command -v apt &> /dev/null; then
-        PACKAGE_MANAGER="apt"
-    elif command -v pacman &> /dev/null; then
-        PACKAGE_MANAGER="pacman"
-    elif command -v dnf &> /dev/null; then
-        PACKAGE_MANAGER="dnf"
-    elif command -v yum &> /dev/null; then
-        PACKAGE_MANAGER="yum"
-    elif command -v zypper &> /dev/null; then
-        PACKAGE_MANAGER="zypper"
-    elif command -v apk &> /dev/null; then
-        PACKAGE_MANAGER="apk"
-    else
-        PACKAGE_MANAGER="unknown"
+    if command -v apt &> /dev/null; then PACKAGE_MANAGER="apt"
+    elif command -v pacman &> /dev/null; then PACKAGE_MANAGER="pacman"
+    elif command -v dnf &> /dev/null; then PACKAGE_MANAGER="dnf"
+    elif command -v yum &> /dev/null; then PACKAGE_MANAGER="yum"
+    elif command -v zypper &> /dev/null; then PACKAGE_MANAGER="zypper"
+    elif command -v apk &> /dev/null; then PACKAGE_MANAGER="apk"
+    else PACKAGE_MANAGER="unknown"
     fi
 
-    # Terminal emulator detection
-    if [ -n "$TERM_PROGRAM" ]; then
-        TERMINAL_EMULATOR="$TERM_PROGRAM"
-    elif [ -n "$TERMINAL_EMULATOR" ]; then
-        TERMINAL_EMULATOR="$TERMINAL_EMULATOR"
-    elif [ -n "$XDG_SESSION_TYPE" ]; then
-        TERMINAL_EMULATOR="$XDG_SESSION_TYPE"
-    else
-        TERMINAL_EMULATOR="unknown"
-    fi
+    TERMINAL_EMULATOR="${TERM_PROGRAM:-${TERMINAL_EMULATOR:-${XDG_SESSION_TYPE:-unknown}}}"
+    DESKTOP_SESSION_VAL="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-unknown}}"
 
-    # Desktop session
-    if [ -n "$XDG_CURRENT_DESKTOP" ]; then
-        DESKTOP_SESSION="$XDG_CURRENT_DESKTOP"
-    elif [ -n "$DESKTOP_SESSION" ]; then
-        DESKTOP_SESSION="$DESKTOP_SESSION"
-    else
-        DESKTOP_SESSION="unknown"
-    fi
-
-    # Use Python to substitute placeholders
-    python3 -c "
-import os, sys, re
-with open('$TEMPLATE_FILE', 'r') as f:
+    python3 - "$TEMPLATE_FILE" "$OUTPUT_FILE" <<PYEOF
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
     content = f.read()
 subs = {
-    'OS': '$OS',
-    'KERNEL': '$KERNEL',
-    'ARCH': '$ARCH',
-    'SHELL': '$SHELL',
-    'TERM': '$TERM',
-    'USER': '$USER',
-    'HOME': '$HOME',
+    'OS': '$OS', 'KERNEL': '$KERNEL', 'ARCH': '$ARCH',
+    'SHELL': '$SHELL_NAME', 'TERM': '$TERM',
+    'USER': '$USER_NAME', 'HOME': '$HOME_DIR',
     'PACKAGE_MANAGER': '$PACKAGE_MANAGER',
     'TERMINAL_EMULATOR': '$TERMINAL_EMULATOR',
-    'DESKTOP_SESSION': '$DESKTOP_SESSION',
-    'LANG': '$LANG',
+    'DESKTOP_SESSION': '$DESKTOP_SESSION_VAL',
+    'LANG': '$LANG_VALUE',
 }
 for key, val in subs.items():
     content = content.replace('{{' + key + '}}', val)
-with open('$OUTPUT_FILE', 'w') as f:
+with open(dst, 'w') as f:
     f.write(content)
-"
-    success "System prompt generated from template at $OUTPUT_FILE"
-else
-    warn "Template file $TEMPLATE_FILE not found – using default hardcoded prompt."
-    mkdir -p src/prompts
+PYEOF
+    success "System prompt regenerated from template."
+elif [ ! -f "$OUTPUT_FILE" ]; then
+    info "No template found — writing default system prompt."
     cat > "$OUTPUT_FILE" <<'EOF'
 You are an AI assistant that helps users with system administration and development tasks.
 Your responses should be clear, concise, and include commands only when appropriate.
@@ -480,34 +460,31 @@ ls -la
 
 Always explain what the command does before showing it.
 EOF
-    success "Default system prompt created at $OUTPUT_FILE"
+    success "Default system prompt written."
+else
+    info "Existing system prompt preserved (no template found)."
 fi
 
-# ── Create logs directory ──
+# ── Logs directory ──
 mkdir -p logs
 
-# ── Final instructions ──
+# ── Done ──
 echo ""
 success "Setup complete!"
 echo ""
 info "Next steps:"
-echo "  1. (Optional) Edit config/settings.json to adjust paths, port, or behaviour."
-echo "  2. Log in to DeepSeek once to save the session:"
-echo "       AnyNect login"
-echo "     (or run 'python -m tests.test_browser' if you prefer the test harness)"
-echo "  3. Start the server:"
-echo "       AnyNect start"
-echo "     (or just 'AnyNect' — start is the default subcommand)"
-echo "  4. Open http://127.0.0.1:8000 in your browser (or the port you configured)."
+echo "  • Activate the venv in your current shell:"
+echo "      bash/zsh:  source .venv/bin/activate"
+echo "      fish:      source .venv/bin/activate.fish"
 echo ""
-info "Available commands:"
-echo "       AnyNect start [--host H] [--port P] [--reload]"
-echo "       AnyNect setup"
-echo "       AnyNect login"
-echo "       AnyNect test [all|config|browser]"
-echo "       AnyNect version"
+echo "  • Then run any of:"
+echo "      AnyNect                 # start the server (default)"
+echo "      AnyNect start --port P  # start on a custom port"
+echo "      AnyNect login           # log in to DeepSeek once"
+echo "      AnyNect test all        # run tests"
+echo "      AnyNect version"
 echo ""
-info "Note: The browser profile is stored in $HOME/.autonect/browser-profile."
-echo "      You only need to log in once; cookies are saved."
+info "Browser profile is stored at \$HOME/.autonect/browser-profile."
+echo "      You only need to log in to DeepSeek once — cookies are saved."
 echo ""
-info "Note: 'AutoNect' remains available as a backward-compat alias for 'AnyNect'."
+info "'AutoNect' remains available as a backward-compat alias for 'AnyNect'."

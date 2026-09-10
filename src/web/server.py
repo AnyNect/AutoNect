@@ -126,9 +126,12 @@ async def lifespan(app: FastAPI):
     try:
         await loop.run_in_executor(_provider_executor, provider.connect)
         logger.info("DeepSeek provider connected")
+        _host = os.environ.get("AUTONECT_HOST", "127.0.0.1")
+        _port = os.environ.get("AUTONECT_PORT", "8000")
+        _url = f"http://{_host}:{_port}"
         print("\n" + "=" * 60)
-        print("✅ AutoNect is ready!")
-        print("🌐 Open the UI at: \033]8;;http://127.0.0.1:8000\033\\http://127.0.0.1:8000\033]8;;\033\\")
+        print("✅ AnyNect is ready!")
+        print(f"🌐 Open the UI at: \033]8;;{_url}\033\\{_url}\033]8;;\033\\")
         print("📝 Press Ctrl+C to stop the server")
         print("=" * 60 + "\n")
     except Exception as e:

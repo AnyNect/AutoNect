@@ -1,0 +1,1 @@
+# Optional extras used only when Konsole is detected. Leave empty for now.
