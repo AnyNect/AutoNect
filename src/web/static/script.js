@@ -1092,6 +1092,7 @@ async function openNativeTerminal(command) {
 }
 
 async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
+    return (async () => {
     try {
         logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId });
         const fbResponse = await fetch('/api/ai-feedback', {
@@ -1109,6 +1110,7 @@ async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
     } catch (fbError) {
         logger.error('Batch feedback failed', fbError);
     }
+    })();
 }
 
 function handleDecline(card) {
@@ -1354,6 +1356,7 @@ async function handleAllow(card, onComplete = null) {
         updateCommandCardTitle(card);
 
         const sendSingleFeedback = async (cmd, out, code) => {
+            return (async () => {
             try {
                 logger.debug('Sending single feedback', {
                     command: cmd.substring(0, 30),
@@ -1383,6 +1386,7 @@ async function handleAllow(card, onComplete = null) {
             } catch (fbError) {
                 logger.error('Single feedback failed', fbError);
             }
+            })();
         };
 
         // ── Only release the busy state when the entire batch is done ──
@@ -1391,6 +1395,7 @@ async function handleAllow(card, onComplete = null) {
         // the first command finished — before the remaining commands had
         // even started. That is the "queue bypass" reported in issue #7.
         let batchDone = false;
+        let feedbackPromise = Promise.resolve();
         if (card._group) {
             const group = card._group;
             group.outputs.push({
@@ -1403,18 +1408,24 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                sendBatchFeedback(group.outputs, group.chat_id, outputId);
+                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, outputId);
                 batchDone = true;
             }
         } else {
-            sendSingleFeedback(commandStr, collectedOutput, resolvedExitCode);
+            feedbackPromise = sendSingleFeedback(commandStr, collectedOutput, resolvedExitCode);
             batchDone = true;
         }
 
         if (batchDone) {
-            isProcessing = false;
-            sendBtn.disabled = !promptInput.value.trim();
-            processNextQueueTask();
+            // Hold isProcessing until the AI has actually responded to the
+            // command output. Releasing it immediately after the command
+            // exits opened a window where a queued message could fire
+            // before the AI's reply landed in the chat.
+            feedbackPromise.finally(() => {
+                isProcessing = false;
+                sendBtn.disabled = !promptInput.value.trim();
+                processNextQueueTask();
+            });
         }
 
         if (onComplete) onComplete();
