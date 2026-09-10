@@ -369,7 +369,7 @@ atomic_write "$SELECTORS_FILE" <<'JSONEOF'
   "code_block": ".md-code-block",
   "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)",
   "file_input": "input[type=\"file\"]",
-  "chat_title": "#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div"
+  "title_suffix": " - DSeek"
 }
 JSONEOF
 

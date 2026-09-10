@@ -48,7 +48,7 @@ def _init_db(conn):
 
 # ── Chat CRUD ──
 
-def upsert_chat(chat_id: str, deepseek_url: Optional[str] = None, name: Optional[str] = None, pinned: bool = False, is_custom_name: bool = False):
+def upsert_chat(chat_id: str, deepseek_url: Optional[str] = None, name: Optional[str] = None, pinned: Optional[bool] = None, is_custom_name: Optional[bool] = None):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT id FROM chats WHERE id = ?", (chat_id,))
@@ -78,6 +78,40 @@ def upsert_chat(chat_id: str, deepseek_url: Optional[str] = None, name: Optional
             cur.execute(f"UPDATE chats SET {', '.join(updates)} WHERE id = ?", params)
     conn.commit()
     conn.close()
+
+def chat_exists(chat_id: str) -> bool:
+    """Return True if a chat row with this id exists.
+
+    Used by /api/chat to decide new-vs-existing without relying on
+    in-memory state, which resets on every server restart.
+    """
+    if not chat_id:
+        return False
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+def get_chat_by_url(url_fragment: str):
+    """Return the chat whose deepseek_url contains url_fragment.
+
+    Used by title sync to attribute a DOM event to the correct row
+    regardless of which chat the sidebar happens to be highlighting.
+    """
+    if not url_fragment:
+        return None
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM chats WHERE deepseek_url LIKE ? LIMIT 1",
+        ("%" + url_fragment + "%",)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 
 def get_chat_list():
     conn = get_db()

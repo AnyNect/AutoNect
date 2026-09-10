@@ -206,63 +206,6 @@ function enableChatNameEdit(chatId) {
     });
 }
 
-async function extractChatTitleFromPage() {
-    // Ordered fallback chain. The structural selector is most resilient to
-    // DeepSeek changing their class hashes; the leaf-class selectors are
-    // backups for when the parent structure itself gets rewritten.
-    const selectors = [
-        // 1. Structural (Sept 2026) — resilient to leaf class changes
-        '#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div',
-        // 2. Leaf classes as of the current build
-        '.afa34042.e0a1edb7.e37a04e4',
-        // 3. Legacy selector with the removed _5a50d80 class
-        '#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div.afa34042.e0a1edb7.e37a04e4',
-    ];
-
-    const script = `
-        (function() {
-            const sels = ${JSON.stringify(selectors)};
-            for (const sel of sels) {
-                try {
-                    const el = document.querySelector(sel);
-                    const t = el && el.textContent && el.textContent.trim();
-                    if (t) return t;
-                } catch (e) { /* invalid selector — skip */ }
-            }
-            return '';
-        })()
-    `;
-
-    try {
-        const resp = await fetch('/api/browser/evaluate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ script })
-        });
-        const data = await resp.json();
-        if (data && data.result) return data.result;
-    } catch (e) {
-        logger.debug('extractChatTitleFromPage failed', e);
-    }
-    return '';
-}
-
-async function updateChatNameFromPage(chatId) {
-    const title = await extractChatTitleFromPage();
-    if (title && title.length > 0) {
-        try {
-            await fetch(`/api/chats/${chatId}/name`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: title })
-            });
-            logger.info('Chat name updated from page', { chatId, title });
-        } catch (e) {
-            logger.error('Failed to update chat name from page', e);
-        }
-    }
-}
-
 async function loadChat(chatId) {
     if (chatId === currentChatId) {
         toggleSidebar(false);
@@ -276,22 +219,11 @@ async function loadChat(chatId) {
         currentChatId = chatId;
         
         if (data.deepseek_url) {
-            // Only fetch and update the name if the chat is NOT custom
-            if (!data.is_custom_name) {
-                fetch('/api/browser/navigate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: data.deepseek_url })
-                }).then(() => {
-                    updateChatNameFromPage(chatId).then(() => loadChatList());
-                }).catch(err => logger.error('Navigation error', err));
-            } else {
-                fetch('/api/browser/navigate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: data.deepseek_url })
-                }).catch(err => logger.error('Navigation error', err));
-            }
+            fetch('/api/browser/navigate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: data.deepseek_url })
+            }).catch(err => logger.error('Navigation error', err));
         }
         
         chatArea.innerHTML = '';
@@ -587,34 +519,9 @@ async function uploadFilesAndSend(promptText) {
     await sendToAI(promptText);
 }
 
-// ── Helper: Wait for the chat title to change from "New chat" ──
-async function waitForTitleChange(chatId, timeout = 5000) {
-    const start = Date.now();
-    let lastTitle = '';
-    while (Date.now() - start < timeout) {
-        const title = await extractChatTitleFromPage();
-        if (title && title.trim() !== 'New chat' && title !== lastTitle) {
-            logger.info('Title changed to: "%s"', title);
-            await updateChatNameFromPage(chatId);
-            return;
-        }
-        lastTitle = title;
-        await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    // If we time out, try one last time with the current title
-    const finalTitle = await extractChatTitleFromPage();
-    if (finalTitle && finalTitle.trim() !== 'New chat') {
-        await updateChatNameFromPage(chatId);
-    } else {
-        logger.warn('Title did not change within timeout, using current title: "%s"', finalTitle);
-        await updateChatNameFromPage(chatId); // update anyway
-    }
-}
-
 // ── Updated sendToAI ──
 async function sendToAI(promptText) {
     const chatId = currentChatId || null;
-    const isNewChat = (currentChatId === null);
     try {
         logger.debug('Sending to AI', { chatId, prompt: promptText.substring(0, 50) });
         const response = await fetch('/api/chat', {
@@ -631,11 +538,8 @@ async function sendToAI(promptText) {
             currentChatId = data.session_id;
         }
         await loadChatList();
-        // If this was a new chat, wait for the title to change and update it
-        if (isNewChat && currentChatId) {
-            await waitForTitleChange(currentChatId);
-            await loadChatList();
-        }
+        // Title sync is handled server-side by the DOM observer.
+        // See src/browser/observer.py and _on_dom_event in server.py.
     } catch (error) {
         logger.error('AI request failed', error);
         removeLoading();

@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 from logging.config import dictConfig
 import subprocess
+import threading
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,7 +27,7 @@ from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.security import CommandGuard
 from src.core.config import config
-from src.database import upsert_chat, add_message, get_chat_list, get_chat, update_chat, delete_chat, update_chat_name
+from src.database import upsert_chat, add_message, get_chat_list, get_chat, get_chat_by_url, update_chat, delete_chat, update_chat_name, chat_exists
 
 # =============================================================================
 # Logging Configuration
@@ -85,6 +86,30 @@ _provider_executor = ThreadPoolExecutor(max_workers=1)
 provider: DeepSeekProvider | None = None
 guard = CommandGuard()
 
+# Chat id of the conversation the user is currently on. Set by /api/chat.
+# Used by _on_dom_event to attribute DeepSeek title changes to the correct
+# database row without a URL lookup.
+_current_chat_id = None
+_last_synced_title = {}
+
+# Debounce state for title sync. DeepSeek's SPA churns the tab title during
+# generation, so we only commit a title after it has been stable for
+# DEBOUNCE_SECONDS. This prevents rapid oscillation writes.
+_pending_titles = {}          # chat_id -> latest observed title
+_pending_timers = {}          # chat_id -> threading.Timer
+_pending_lock = threading.Lock()
+DEBOUNCE_SECONDS = 2.5
+
+# Titles DeepSeek shows transiently during page load. Never sync these;
+# the real title always arrives later.
+_PLACEHOLDER_TITLES = {
+    "New chat",
+    "DeepSeek",
+    "DSeek",
+    "DSeek - Into the Unknown",
+    "Untitled",
+}
+
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
@@ -97,9 +122,6 @@ try:
 except FileNotFoundError:
     SYSTEM_PROMPT = ""
     logger.warning("System prompt file not found at %s", SYSTEM_PROMPT_PATH)
-
-# Session tracking
-session_data = {}
 
 MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
 TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
@@ -117,6 +139,78 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 # Lifespan & Middleware
 # =============================================================================
 
+def _flush_pending_title(chat_id):
+    """Commit the pending title for a chat after the debounce window."""
+    with _pending_lock:
+        title = _pending_titles.pop(chat_id, None)
+        _pending_timers.pop(chat_id, None)
+    if not title:
+        return
+    try:
+        chat = get_chat(chat_id)
+        if not chat:
+            return
+        if chat.get("is_custom_name"):
+            return
+        if chat.get("name") == title:
+            _last_synced_title[chat_id] = title
+            return
+        upsert_chat(chat_id, name=title)
+        _last_synced_title[chat_id] = title
+        logger.info("Synced chat title from tab (settled): %s -> %s", chat_id[:8], title)
+    except Exception:
+        logger.exception("Failed to flush pending title")
+
+
+def _on_dom_event(event):
+    """Handle a DOM mutation observed by the Playwright observer.
+
+    Currently only reacts to DeepSeek chat-title changes: sync the new
+    title to the database unless the user set a custom name for that chat.
+    Runs on the Playwright thread; must be fast and non-blocking.
+    """
+    # Read the browser tab title. DeepSeek sets it to "<chat name> - DSeek",
+    # which is the most reliable source of the current chat name. The suffix
+    # is configurable via deepseek_selectors.json ("title_suffix").
+    raw = (event.get("title") or "").strip()
+    suffix = (provider.selectors.get("title_suffix") if provider else None) or " - DSeek"
+    if raw.endswith(suffix):
+        title = raw[:-len(suffix)].strip()
+    else:
+        title = raw
+
+    # Ignore placeholder / brand-only titles.
+    if not title or title in _PLACEHOLDER_TITLES or len(title) > 200:
+        return
+
+    # Attribute the title to the chat whose URL matches the current page.
+    # Fall back to the last chat we messaged on if the URL has no match yet
+    # (e.g. the row has not been written to the DB).
+    path = event.get("path") or ""
+    # DeepSeek chat URLs end in /a/chat/s/<uuid>; match on the uuid.
+    uuid_part = ""
+    if "/a/chat/s/" in path:
+        uuid_part = path.rsplit("/a/chat/s/", 1)[-1].split("/")[0].split("?")[0]
+    matched = get_chat_by_url(uuid_part) if uuid_part else None
+    chat_id = matched["id"] if matched else _current_chat_id
+    if not chat_id:
+        return
+    if _last_synced_title.get(chat_id) == title:
+        return
+
+    # Schedule the write after a stability window. If another title arrives
+    # before the timer fires, this one is replaced.
+    with _pending_lock:
+        _pending_titles[chat_id] = title
+        old = _pending_timers.pop(chat_id, None)
+        if old:
+            old.cancel()
+        t = threading.Timer(DEBOUNCE_SECONDS, _flush_pending_title, args=(chat_id,))
+        t.daemon = True
+        _pending_timers[chat_id] = t
+        t.start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global provider
@@ -126,6 +220,9 @@ async def lifespan(app: FastAPI):
     try:
         await loop.run_in_executor(_provider_executor, provider.connect)
         logger.info("DeepSeek provider connected")
+        if provider.observer:
+            provider.observer.subscribe(_on_dom_event)
+            logger.info("Subscribed to DOM observer for title sync")
         _host = os.environ.get("AUTONECT_HOST", "127.0.0.1")
         _port = os.environ.get("AUTONECT_PORT", "8000")
         _url = f"http://{_host}:{_port}"
@@ -290,11 +387,16 @@ async def chat(request: ChatRequest):
 
     loop = asyncio.get_running_loop()
 
+    # Decide new-vs-existing from the database, not from in-memory state.
+    # An in-memory flag resets on every server restart, which caused
+    # existing chats to be renamed to the last prompt on the next message.
+    is_new_chat = (request.session_id is None) or (not chat_exists(request.session_id))
     if request.session_id is None:
         request.session_id = str(uuid.uuid4())
+
+    if is_new_chat:
         logger.info("New session created: %s", request.session_id)
         full_prompt = f"{SYSTEM_PROMPT}\n\n{request.prompt}" if SYSTEM_PROMPT else request.prompt
-        session_data[request.session_id] = True
     else:
         full_prompt = request.prompt
         logger.debug("Existing session: %s", request.session_id)
@@ -307,8 +409,11 @@ async def chat(request: ChatRequest):
         response = await loop.run_in_executor(_provider_executor, send_and_get)
         thinking, answer, commands = _extract_response(response, request.session_id)
 
+        global _current_chat_id
+        _current_chat_id = request.session_id
+
         deepseek_url = provider.page.url if provider.page else None
-        chat_name = request.prompt[:50] if request.session_id not in session_data else None
+        chat_name = request.prompt[:50] if is_new_chat else None
         upsert_chat(request.session_id, deepseek_url, chat_name)
 
         add_message(request.session_id, "user", request.prompt)
