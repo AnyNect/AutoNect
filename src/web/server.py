@@ -695,6 +695,15 @@ async def websocket_execute(websocket: WebSocket):
     pid, master_fd = pty.fork()
     if pid == 0:
         # pty.fork() already called setsid() in the child.
+        # Suppress interactive pagers. Tools like less, man, git log, and
+        # systemctl read from the PTY's stdin while running; if a pager
+        # consumes the exit that we write to the master, the shell never
+        # sees it and the session hangs until the user types exit.
+        os.environ["PAGER"] = "cat"
+        os.environ["GIT_PAGER"] = "cat"
+        os.environ["MANPAGER"] = "cat"
+        os.environ["SYSTEMD_PAGER"] = "cat"
+        os.environ["LESS"] = "-FRX"
         os.execvp("/bin/sh", ["/bin/sh"])
         os._exit(1)
 
