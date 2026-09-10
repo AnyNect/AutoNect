@@ -75,7 +75,11 @@ if [ -f "dependencies/base.txt" ]; then
     pip install -r dependencies/base.txt
 else
     warn "dependencies/base.txt not found – using requirements.txt (legacy)"
-    pip install -r requirements.txt
+    if [ -f "requirements.txt" ]; then
+        pip install -r requirements.txt
+    else
+        error "Neither dependencies/base.txt nor requirements.txt found."
+    fi
 fi
 
 # ── Install dev dependencies (optional) ──
@@ -96,7 +100,7 @@ else
     warn "Konsole not found – native terminal integration will be disabled."
 fi
 
-# Ensure setup.py exists
+# ── Ensure setup.py exists ──
 if [ ! -f "setup.py" ]; then
     warn "setup.py not found, creating minimal one..."
     cat > setup.py <<'EOF'
@@ -116,6 +120,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
+            "AnyNect = src.web.launcher:main",
             "AutoNect = src.web.launcher:main",
         ],
     },
@@ -127,39 +132,165 @@ EOF
     success "Created setup.py"
 fi
 
-# Ensure launcher exists
-if [ ! -f "src/web/launcher.py" ]; then
-    warn "launcher.py not found, creating..."
-    mkdir -p src/web
-    cat > src/web/launcher.py <<'EOF'
-#!/usr/bin/env python3
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from src.core.config import config
-from src.web.server import app
-import uvicorn
+# ── Launcher ──
+# The launcher is a generated file — always write the latest version so
+# upgrades (including new subcommands) land reliably. A timestamped backup
+# is taken if the file already exists so user edits are never lost.
+if [ -f "src/web/launcher.py" ]; then
+    BACKUP="src/web/launcher.py.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "src/web/launcher.py" "$BACKUP"
+    info "Existing launcher.py backed up to $BACKUP"
+fi
 
-def main():
-    port = config.get("server", "port", default=8000)
-    host = config.get("server", "host", default="127.0.0.1")
-    reload = config.get("server", "reload", default=False)
+mkdir -p src/web
+info "Writing launcher.py (AnyNect CLI)..."
+cat > src/web/launcher.py <<'EOF'
+#!/usr/bin/env python3
+"""AnyNect CLI — global entry point for AutoNect.
+
+Installed via `pip install -e .`, which registers the `AnyNect` command
+through setup.py's entry_points. `AutoNect` is kept as a backward-compat
+alias pointing at the same `main` function.
+
+Subcommands:
+    start   (default)  start the AutoNect web server
+    setup              run setup.sh to install/repair dependencies
+    login              open DeepSeek in the default browser
+    test [target]      run tests (all | config | browser)
+    version            print the version
+"""
+import argparse
+import subprocess
+import sys
+import webbrowser
+from pathlib import Path
+
+VERSION = "1.0.0"
+
+# When invoked through the console_scripts entry point, sys.path does not
+# include the project root, so `import src.*` fails unless we add it here.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _run(cmd, **kwargs):
+    """Run a subprocess from the project root, propagating Ctrl+C cleanly."""
+    try:
+        return subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True, **kwargs)
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        return 130
+    except subprocess.CalledProcessError as e:
+        return e.returncode
+
+
+def cmd_start(args):
+    from src.core.config import config
+
+    port = args.port if args.port is not None else config.get("server", "port", default=8000)
+    host = args.host if args.host is not None else config.get("server", "host", default="127.0.0.1")
+    reload = args.reload if args.reload is not None else config.get("server", "reload", default=False)
+
+    import uvicorn
     print(f"🚀 Starting AutoNect on http://{host}:{port}")
-    uvicorn.run("src.web.server:app", host=host, port=port, reload=reload, log_level="info")
+    uvicorn.run(
+        "src.web.server:app",
+        host=host,
+        port=port,
+        reload=bool(reload),
+        log_level="info",
+    )
+    return 0
+
+
+def cmd_setup(args):
+    script = PROJECT_ROOT / "setup.sh"
+    if not script.exists():
+        print(f"setup.sh not found at {script}", file=sys.stderr)
+        return 1
+    return _run(["bash", str(script)])
+
+
+def cmd_login(args):
+    webbrowser.open("https://chat.deepseek.com/")
+    print("Opened DeepSeek in your default browser.")
+    return 0
+
+
+def cmd_test(args):
+    mapping = {
+        "config":  "tests.test_config",
+        "browser": "tests.test_browser",
+    }
+    target = args.target or "all"
+    if target == "all":
+        return _run([sys.executable, "-m", "pytest", "tests/"])
+    module = mapping.get(target)
+    if not module:
+        print(f"Unknown test target: {target}", file=sys.stderr)
+        print(f"Available: all, {', '.join(mapping)}", file=sys.stderr)
+        return 2
+    return _run([sys.executable, "-m", module])
+
+
+def cmd_version(args):
+    print(f"AnyNect v{VERSION}")
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="AnyNect",
+        description="AnyNect — AI-driven desktop automation via DeepSeek.",
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p_start = sub.add_parser("start", help="Start the AnyNect web server (default)")
+    p_start.add_argument("--host", default=None, help="Bind host (default: from config)")
+    p_start.add_argument("--port", type=int, default=None, help="Bind port (default: from config)")
+    p_start.add_argument("--reload", dest="reload", action="store_true", default=None,
+                         help="Enable uvicorn auto-reload")
+    p_start.add_argument("--no-reload", dest="reload", action="store_false",
+                         help="Disable uvicorn auto-reload")
+    p_start.set_defaults(func=cmd_start)
+
+    p_setup = sub.add_parser("setup", help="Run setup.sh to install dependencies and browsers")
+    p_setup.set_defaults(func=cmd_setup)
+
+    p_login = sub.add_parser("login", help="Open DeepSeek in your default browser")
+    p_login.set_defaults(func=cmd_login)
+
+    p_test = sub.add_parser("test", help="Run tests")
+    p_test.add_argument("target", nargs="?", help="all (default) | config | browser")
+    p_test.set_defaults(func=cmd_test)
+
+    p_ver = sub.add_parser("version", help="Print version")
+    p_ver.set_defaults(func=cmd_version)
+
+    args = parser.parse_args(argv)
+
+    # No subcommand → default to `start`
+    if not args.command:
+        args.host = None
+        args.port = None
+        args.reload = None
+        return cmd_start(args)
+
+    return args.func(args)
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 EOF
-    success "Created launcher.py"
-fi
+success "launcher.py written."
 
 # ── Install package in editable mode ──
 info "Installing AutoNect package in editable mode..."
 pip install -e .
-pip install -r dependencies/base.txt
 
 # ── Install Playwright browsers ──
-info "Installing Playwright Chromium (headless) ..."
+info "Installing Playwright Chromium (headless)..."
 playwright install chromium
 
 # ── Generate configuration if missing ──
@@ -205,12 +336,19 @@ else
     info "config/settings.json already exists – skipping."
 fi
 
-# ── Generate DeepSeek selectors file if missing ──
+# ── DeepSeek selectors ──
+# This file tracks DeepSeek's web UI. It is generated, not user-owned, so we
+# always write the current version. A backup is taken if one exists.
 SELECTORS_FILE="src/ai/providers/deepseek_selectors.json"
-if [ ! -f "$SELECTORS_FILE" ]; then
-    info "Generating default DeepSeek selectors..."
-    mkdir -p src/ai/providers
-    cat > "$SELECTORS_FILE" <<'EOF'
+mkdir -p "$(dirname "$SELECTORS_FILE")"
+if [ -f "$SELECTORS_FILE" ]; then
+    BACKUP="${SELECTORS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$SELECTORS_FILE" "$BACKUP"
+    info "Existing selectors backed up to $BACKUP"
+fi
+
+info "Writing DeepSeek selectors (including chat_title)..."
+cat > "$SELECTORS_FILE" <<'EOF'
 {
   "textarea": "textarea[placeholder=\"Message DSeek\"]",
   "send_button": "div[role=\"button\"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)",
@@ -219,13 +357,12 @@ if [ ! -f "$SELECTORS_FILE" ]; then
   "assistant_container": ".ds-assistant-message-main-content",
   "language_tag": ".d813de27",
   "code_block": ".md-code-block",
-  "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)"
+  "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)",
+  "file_input": "input[type=\"file\"]",
+  "chat_title": "#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div"
 }
 EOF
-    success "DeepSeek selectors created at $SELECTORS_FILE."
-else
-    info "DeepSeek selectors already exist – skipping."
-fi
+success "DeepSeek selectors written to $SELECTORS_FILE."
 
 # ── Create User directory with placeholders ──
 if [ ! -d "User" ]; then
@@ -355,12 +492,22 @@ success "Setup complete!"
 echo ""
 info "Next steps:"
 echo "  1. (Optional) Edit config/settings.json to adjust paths, port, or behaviour."
-echo "  2. Log in to DeepSeek once to save session:"
-echo "       python -m tests.test_browser"
+echo "  2. Log in to DeepSeek once to save the session:"
+echo "       AnyNect login"
+echo "     (or run 'python -m tests.test_browser' if you prefer the test harness)"
 echo "  3. Start the server:"
-echo "       AutoNect"
-echo "     (or run 'python -m src.web.launcher' if you prefer)"
+echo "       AnyNect start"
+echo "     (or just 'AnyNect' — start is the default subcommand)"
 echo "  4. Open http://127.0.0.1:8000 in your browser (or the port you configured)."
+echo ""
+info "Available commands:"
+echo "       AnyNect start [--host H] [--port P] [--reload]"
+echo "       AnyNect setup"
+echo "       AnyNect login"
+echo "       AnyNect test [all|config|browser]"
+echo "       AnyNect version"
 echo ""
 info "Note: The browser profile is stored in $HOME/.autonect/browser-profile."
 echo "      You only need to log in once; cookies are saved."
+echo ""
+info "Note: 'AutoNect' remains available as a backward-compat alias for 'AnyNect'."

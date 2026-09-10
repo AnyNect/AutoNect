@@ -532,6 +532,17 @@ async def navigate_browser(request: NavigateRequest):
         logger.exception("Navigation error")
         return JSONResponse(status_code=500, content={"error": f"Navigation failed: {str(e)}"})
 
+@app.get("/api/selectors")
+async def get_selectors():
+    """Expose the current DeepSeek selector map to the frontend.
+
+    The title-extraction logic in script.js uses a hardcoded fallback chain.
+    This endpoint lets the frontend pull the authoritative chain from the
+    provider config, so UI changes only require editing the JSON file.
+    """
+    if not provider:
+        return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
+    return JSONResponse(content=provider.selectors)
 
 @app.post("/api/browser/evaluate")
 async def evaluate_browser(request: Request):

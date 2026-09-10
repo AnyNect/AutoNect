@@ -14,6 +14,9 @@ setup(
     ],
     entry_points={
         "console_scripts": [
+            # Primary CLI (matches the AnyNect org name)
+            "AnyNect = src.web.launcher:main",
+            # Backward-compat alias for existing installs
             "AutoNect = src.web.launcher:main",
         ],
     },

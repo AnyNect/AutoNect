@@ -207,19 +207,43 @@ function enableChatNameEdit(chatId) {
 }
 
 async function extractChatTitleFromPage() {
-    const selector = '#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div.afa34042.e0a1edb7.e37a04e4._5a50d80';
+    // Ordered fallback chain. The structural selector is most resilient to
+    // DeepSeek changing their class hashes; the leaf-class selectors are
+    // backups for when the parent structure itself gets rewritten.
+    const selectors = [
+        // 1. Structural (Sept 2026) — resilient to leaf class changes
+        '#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div',
+        // 2. Leaf classes as of the current build
+        '.afa34042.e0a1edb7.e37a04e4',
+        // 3. Legacy selector with the removed _5a50d80 class
+        '#root > div > div.c3ecdb44 > div._7780f2e > div > div._2be88ba > div.f8d1e4c0.the-header > div > div.afa34042.e0a1edb7.e37a04e4',
+    ];
+
+    const script = `
+        (function() {
+            const sels = ${JSON.stringify(selectors)};
+            for (const sel of sels) {
+                try {
+                    const el = document.querySelector(sel);
+                    const t = el && el.textContent && el.textContent.trim();
+                    if (t) return t;
+                } catch (e) { /* invalid selector — skip */ }
+            }
+            return '';
+        })()
+    `;
+
     try {
-        const title = await fetch('/api/browser/evaluate', {
+        const resp = await fetch('/api/browser/evaluate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                script: `document.querySelector('${selector}')?.textContent?.trim() || ''`
-            })
-        }).then(r => r.json());
-        if (title && title.result) {
-            return title.result;
-        }
-    } catch (e) { /* ignore */ }
+            body: JSON.stringify({ script })
+        });
+        const data = await resp.json();
+        if (data && data.result) return data.result;
+    } catch (e) {
+        logger.debug('extractChatTitleFromPage failed', e);
+    }
     return '';
 }
 
@@ -485,29 +509,49 @@ function togglePauseQueue(event) {
     }
     renderQueue();
 }
+
 function handleSend() {
     const text = promptInput.value.trim();
     if (!text) return;
     promptInput.value = '';
     promptInput.style.height = 'auto';
     sendBtn.disabled = true;
-    if (!isProcessing && !isPaused) {
-        logger.info('Sending prompt directly', { prompt: text.substring(0, 50) });
-        executeTask(text);
-    } else {
-        logger.info('Queuing prompt', { prompt: text.substring(0, 50) });
+
+    if (isProcessing || isPaused) {
+        logger.info('Queuing prompt (app busy)', { prompt: text.substring(0, 50) });
         taskQueue.push(text);
         renderQueue();
+    } else {
+        logger.info('Sending prompt directly', { prompt: text.substring(0, 50) });
+        executeTask(text);
     }
 }
+
 function executeTask(promptText) {
     isProcessing = true;
     addMessage('user', promptText);
     showLoading();
-    uploadFilesAndSend(promptText).then(() => {
-        isProcessing = false;
-        processNextQueueTask();
-    });
+
+    uploadFilesAndSend(promptText)
+        .then(() => {
+            // Keep isProcessing = true if command cards are still pending.
+            // The WebSocket close handler for the last command in the group
+            // is responsible for clearing it and draining the queue.
+            const hasPendingCommands = activeCommandGroup && !activeCommandGroup.resolved;
+            if (!hasPendingCommands) {
+                isProcessing = false;
+                sendBtn.disabled = !promptInput.value.trim();
+                processNextQueueTask();
+            } else {
+                logger.debug('executeTask done, but command group still pending — keeping busy');
+            }
+        })
+        .catch((err) => {
+            logger.error('executeTask failed', err);
+            isProcessing = false;
+            sendBtn.disabled = !promptInput.value.trim();
+            processNextQueueTask();
+        });
 }
 
 async function uploadFilesAndSend(promptText) {
@@ -607,13 +651,22 @@ async function sendToAI(promptText) {
 }
 
 function processNextQueueTask() {
-    if (!isPaused && taskQueue.length > 0) {
-        const nextPrompt = taskQueue.shift();
-        logger.debug('Processing next queue task', { prompt: nextPrompt.substring(0, 30) });
-        renderQueue();
-        executeTask(nextPrompt);
+    // Do not drain the queue if the app is still busy. This guards against
+    // any handler that mistakenly calls us mid-flight.
+    if (isProcessing) {
+        logger.debug('processNextQueueTask called while busy — skipping');
+        return;
     }
+    if (isPaused) return;
+    if (taskQueue.length === 0) return;
+
+    const nextPrompt = taskQueue.shift();
+    logger.debug('Processing next queue task', { prompt: nextPrompt.substring(0, 30) });
+    renderQueue();
+    executeTask(nextPrompt);
 }
+
+
 /* ── Queue editing ── */
 function enableEdit(index, event) {
     if (event) event.stopPropagation();
@@ -1072,7 +1125,7 @@ function handleDecline(card) {
     if (cursor) cursor.classList.add('hidden');
     if (btnRow) btnRow.remove();
     if (pulseRing) pulseRing.remove();
-    
+
     const activeColor = 'var(--color-denied)';
     const stateText = 'COMMAND DENIED';
     card.dataset.activeColor = activeColor;
@@ -1084,7 +1137,9 @@ function handleDecline(card) {
     card.classList.remove('expanded');
     updateCommandCardTitle(card);
     logger.warn('Command declined', { command: commandStr.substring(0, 30) });
-    
+
+    // ── Group bookkeeping ──
+    let batchDone = false;
     if (card._group) {
         const group = card._group;
         group.outputs.push({ command: commandStr, stdout: '', stderr: 'Declined by user', exit_code: -1 });
@@ -1093,7 +1148,19 @@ function handleDecline(card) {
             group.resolved = true;
             activeCommandGroup = null;
             sendBatchFeedback(group.outputs, group.chat_id);
+            batchDone = true;
         }
+    } else {
+        batchDone = true;
+    }
+
+    // If this decline completed the whole batch, release the busy state
+    // and drain the queue. Previously this path left isProcessing = true
+    // forever, which silently disabled queue draining.
+    if (batchDone) {
+        isProcessing = false;
+        sendBtn.disabled = !promptInput.value.trim();
+        processNextQueueTask();
     }
 }
 
@@ -1250,18 +1317,12 @@ async function handleAllow(card, onComplete = null) {
 
         delete card._ws;
 
-        // ── Resolve exit code ──
-        // Prefer the in-band exit message (ws.onmessage). If that never
-        // arrived — a known race with ASGI transports flushing the close
-        // frame ahead of the last text frame — recover the exit code from
-        // the close frame, where the server also encodes it.
+        // ── Resolve exit code: prefer in-band message, fall back to close frame ──
         let resolvedExitCode = exitCode;
         if (resolvedExitCode === -1 && event && typeof event.reason === 'string' && event.reason) {
             const m = event.reason.match(/^(exit|signal):(-?\d+|unknown)$/);
             if (m) {
-                if (m[1] === 'exit' && m[2] === 'unknown') {
-                    // leave as -1
-                } else {
+                if (!(m[1] === 'exit' && m[2] === 'unknown')) {
                     const n = parseInt(m[2], 10);
                     resolvedExitCode = (m[1] === 'signal') ? -n : n;
                     logger.info('Recovered exit code from close frame', {
@@ -1324,6 +1385,12 @@ async function handleAllow(card, onComplete = null) {
             }
         };
 
+        // ── Only release the busy state when the entire batch is done ──
+        // Previously isProcessing was cleared here unconditionally, which
+        // meant that in a multi-command group the queue would drain after
+        // the first command finished — before the remaining commands had
+        // even started. That is the "queue bypass" reported in issue #7.
+        let batchDone = false;
         if (card._group) {
             const group = card._group;
             group.outputs.push({
@@ -1337,17 +1404,21 @@ async function handleAllow(card, onComplete = null) {
                 group.resolved = true;
                 activeCommandGroup = null;
                 sendBatchFeedback(group.outputs, group.chat_id, outputId);
+                batchDone = true;
             }
         } else {
             sendSingleFeedback(commandStr, collectedOutput, resolvedExitCode);
+            batchDone = true;
         }
 
-        isProcessing = false;
-        sendBtn.disabled = !promptInput.value.trim();
-        processNextQueueTask();
+        if (batchDone) {
+            isProcessing = false;
+            sendBtn.disabled = !promptInput.value.trim();
+            processNextQueueTask();
+        }
 
         if (onComplete) onComplete();
-        logger.debug('WebSocket closed, command card finalized');
+        logger.debug('WebSocket closed, command card finalized', { batchDone });
     };
 
     ws.onerror = (err) => {
