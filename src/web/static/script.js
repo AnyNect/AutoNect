@@ -1156,7 +1156,7 @@ async function handleAllow(card, onComplete = null) {
             brightWhite: '#f8fafc',
         },
     });
-    
+
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
@@ -1184,12 +1184,12 @@ async function handleAllow(card, onComplete = null) {
     const ws = new WebSocket(wsUrl);
     card._ws = ws;
     logger.debug('WebSocket connecting', { url: wsUrl });
-    
+
     ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'exec', command: commandStr }));
         logger.info('WebSocket opened, command sent', { command: commandStr.substring(0, 30) });
     };
-    
+
     let collectedOutput = '';
     let exitCode = -1;
     let outputId = null;
@@ -1232,12 +1232,12 @@ async function handleAllow(card, onComplete = null) {
             }
         }
     };
-    
-    ws.onclose = () => {
+
+    ws.onclose = (event) => {
         card._isExecuting = false;
         term.options.disableStdin = true;
         term.options.cursorBlink = false;
-        term.write('\x1b[?25l'); 
+        term.write('\x1b[?25l');
 
         terminalContainer.classList.remove('active');
         terminalContainer.classList.add('readonly');
@@ -1250,8 +1250,32 @@ async function handleAllow(card, onComplete = null) {
 
         delete card._ws;
 
+        // ── Resolve exit code ──
+        // Prefer the in-band exit message (ws.onmessage). If that never
+        // arrived — a known race with ASGI transports flushing the close
+        // frame ahead of the last text frame — recover the exit code from
+        // the close frame, where the server also encodes it.
+        let resolvedExitCode = exitCode;
+        if (resolvedExitCode === -1 && event && typeof event.reason === 'string' && event.reason) {
+            const m = event.reason.match(/^(exit|signal):(-?\d+|unknown)$/);
+            if (m) {
+                if (m[1] === 'exit' && m[2] === 'unknown') {
+                    // leave as -1
+                } else {
+                    const n = parseInt(m[2], 10);
+                    resolvedExitCode = (m[1] === 'signal') ? -n : n;
+                    logger.info('Recovered exit code from close frame', {
+                        reason: event.reason, resolvedExitCode
+                    });
+                }
+            }
+        }
+        if (resolvedExitCode === -1 && event && event.code === 1000) {
+            resolvedExitCode = 0;
+        }
+
         let activeColor, stateText;
-        if (exitCode === 0) {
+        if (resolvedExitCode === 0) {
             activeColor = 'var(--color-success)';
             stateText = 'COMMAND EXECUTED';
         } else {
@@ -1270,7 +1294,12 @@ async function handleAllow(card, onComplete = null) {
 
         const sendSingleFeedback = async (cmd, out, code) => {
             try {
-                logger.debug('Sending single feedback', { command: cmd.substring(0, 30), exitCode: code, chatId: currentChatId, outputId });
+                logger.debug('Sending single feedback', {
+                    command: cmd.substring(0, 30),
+                    exitCode: code,
+                    chatId: currentChatId,
+                    outputId
+                });
                 const fbResponse = await fetch('/api/ai-feedback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1297,7 +1326,12 @@ async function handleAllow(card, onComplete = null) {
 
         if (card._group) {
             const group = card._group;
-            group.outputs.push({ command: commandStr, stdout: collectedOutput, stderr: '', exit_code: exitCode });
+            group.outputs.push({
+                command: commandStr,
+                stdout: collectedOutput,
+                stderr: '',
+                exit_code: resolvedExitCode
+            });
             group.completed++;
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
@@ -1305,7 +1339,7 @@ async function handleAllow(card, onComplete = null) {
                 sendBatchFeedback(group.outputs, group.chat_id, outputId);
             }
         } else {
-            sendSingleFeedback(commandStr, collectedOutput, exitCode);
+            sendSingleFeedback(commandStr, collectedOutput, resolvedExitCode);
         }
 
         isProcessing = false;
@@ -1315,25 +1349,25 @@ async function handleAllow(card, onComplete = null) {
         if (onComplete) onComplete();
         logger.debug('WebSocket closed, command card finalized');
     };
-    
+
     ws.onerror = (err) => {
         logger.error('WebSocket error', err);
         term.write('\r\n\x1b[31mConnection error\x1b[0m\r\n');
         ws.close();
     };
-    
+
     term.onData((data) => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "stdin", data: data }));
         }
     });
-    
+
     term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         }
     });
-    
+
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
             if (mutation.type === 'attributes' && mutation.attributeName === 'class') {

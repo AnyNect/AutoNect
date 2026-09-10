@@ -674,14 +674,14 @@ async def websocket_execute(websocket: WebSocket):
             return
 
     # ── Fork PTY ──
+    # Launch a plain interactive shell (argv does NOT contain the user command),
+    # then feed the command via the PTY master. This prevents tools like
+    # `pkill -f` from matching and SIGTERM-ing the shell's own command line.
     logger.info("Forking PTY for command: %s", command[:100])
     pid, master_fd = pty.fork()
     if pid == 0:
-        try:
-            os.setsid()
-        except OSError:
-            pass
-        os.execvp("/bin/sh", ["/bin/sh", "-c", command])
+        # pty.fork() already called setsid() in the child.
+        os.execvp("/bin/sh", ["/bin/sh"])
         os._exit(1)
 
     logger.debug("Forked child PID: %d", pid)
@@ -689,6 +689,12 @@ async def websocket_execute(websocket: WebSocket):
     # Make PTY non-blocking
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    # Send the command to the shell via the PTY master.
+    try:
+        os.write(master_fd, (command + "\nexit\n").encode())
+    except OSError as e:
+        logger.error("Failed to write command to PTY: %s", e)
 
     loop = asyncio.get_running_loop()
     output_chunks = []
@@ -800,18 +806,52 @@ async def websocket_execute(websocket: WebSocket):
     writer_task = asyncio.create_task(write_ws_to_pty())
     exit_task = asyncio.create_task(wait_for_exit(pid))
 
-    # Wait for either the process to exit or the writer to stop (client disconnect)
+    # Wait for either the process to exit or the writer to stop (client disconnect).
     done, pending = await asyncio.wait(
         [exit_task, writer_task],
         return_when=asyncio.FIRST_COMPLETED
     )
 
+    # ── Ensure the child is reaped so exit_status gets a real value ──
+    # If the writer stopped first (client disconnected) but the process is
+    # still running, do NOT cancel exit_task — that would leave exit_status
+    # as None and cause "-1" to be reported for a successful command.
+    # Instead, give the process a grace period, then escalate SIGTERM → SIGKILL.
+    if exit_task in pending:
+        logger.info("Writer stopped before process exit; waiting for PID %d to finish", pid)
+        try:
+            await asyncio.wait_for(asyncio.shield(exit_task), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.info("PID %d still alive, sending SIGTERM to process group", pid)
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except OSError as e:
+                logger.debug("killpg(SIGTERM) failed: %s", e)
+            try:
+                await asyncio.wait_for(asyncio.shield(exit_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("PID %d ignored SIGTERM, sending SIGKILL", pid)
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except OSError as e:
+                    logger.debug("killpg(SIGKILL) failed: %s", e)
+                try:
+                    await asyncio.wait_for(asyncio.shield(exit_task), timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.error("PID %d did not exit after SIGKILL", pid)
+
+    # Cancel whatever is still pending (e.g. writer_task if the process exited first).
     for task in pending:
-        task.cancel()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     # ── Flush any remaining data from PTY ──
     # After the process exits, there may still be buffered output in the PTY.
-    # We'll read until no more data is available (up to 5 attempts with 50ms delay).
+    # Read until no more data is available (up to 5 attempts with 50ms delay).
     flush_attempts = 5
     for _ in range(flush_attempts):
         try:
@@ -838,12 +878,6 @@ async def websocket_execute(websocket: WebSocket):
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
 
-    if exit_task not in done:
-        try:
-            await exit_task
-        except Exception:
-            pass
-
     final_output = b"".join(output_chunks).decode(errors="replace")
 
     output_id = uuid.uuid4().hex
@@ -863,14 +897,40 @@ async def websocket_execute(websocket: WebSocket):
     else:
         exit_msg["message"] = f"Process exited with code {exit_status}" if exit_status is not None else "Unknown exit"
 
-    logger.info("Sending exit message: %s", exit_msg["message"])
+    # ── Convey exit status via the WebSocket close frame ──
+    # Text messages sent right before a close frame are unreliable across
+    # ASGI transports and browsers. The close frame itself is guaranteed to
+    # be delivered, so we encode the exit status in its code and reason.
+    #
+    # Close-code mapping (custom application range is 4000-4999):
+    #   1000        → normal / exit 0
+    #   4000 + N    → process exited with code N (N >= 1)
+    #   4100 + N    → process killed by signal N
+    #   4000        → unknown
+    if exit_status is None:
+        ws_code = 4000
+        ws_reason = "exit:unknown"
+    elif exit_status == 0:
+        ws_code = 1000
+        ws_reason = "exit:0"
+    elif exit_status > 0:
+        ws_code = 4000 + (exit_status % 1000)
+        ws_reason = f"exit:{exit_status}"
+    else:  # negative → killed by signal
+        signum = -exit_status
+        ws_code = 4100 + (signum % 100)
+        ws_reason = f"signal:{signum}"
+
+    logger.info("Sending exit message: %s (close code=%d)", exit_msg["message"], ws_code)
+
+    # Best-effort text frame first, for clients that want the full payload.
     try:
         await websocket.send_text(json.dumps(exit_msg))
     except (WebSocketDisconnect, RuntimeError) as e:
         logger.warning("Could not send exit message: %s", e)
 
     try:
-        await websocket.close()
+        await websocket.close(code=ws_code, reason=ws_reason)
     except (WebSocketDisconnect, RuntimeError):
         logger.debug("WebSocket already closed, skipping close call")
 
@@ -878,4 +938,3 @@ async def websocket_execute(websocket: WebSocket):
         os.close(master_fd)
     except OSError as e:
         logger.error("Error closing master fd: %s", e)
-
