@@ -5,14 +5,14 @@ Environment
 **MANDATORY**: At the very start of each session, you MUST execute the detection commands below and store the values internally. Do not output the results unless the user asks. Use these values to adapt all subsequent commands.
 Run these detection commands at the start of each session to determine the environment:
 OS=Linux
-KERNEL=7.2.3-1-cachyos
+KERNEL=7.2.4-3-cachyos
 ARCH=x86_64
 SHELL=fish
 TERM=xterm-256color
 USER=zizouurl
 HOME=/home/zizouurl
 PACKAGE_MANAGER=pacman
-TERMINAL_EMULATOR=vscode
+TERMINAL_EMULATOR=wayland
 DESKTOP_SESSION=KDE
 LANG=en_GB.UTF-8
 

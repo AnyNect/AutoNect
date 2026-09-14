@@ -54,6 +54,12 @@ let taskQueue = [];
 let commandExecutionQueue = [];
 let isCommandExecuting = false;
 
+/* ── Chat rendering limits ── */
+// Most-recent messages rendered when a chat is opened. Older messages
+// are hidden behind a "Show earlier" button to keep loadChat fast on
+// long conversations. Tune this value if 10 feels too aggressive.
+const MAX_RENDERED_MESSAGES = 10;
+
 /* ── Syntax Highlighting ── */
 marked.setOptions({
     highlight: function(code, lang) {
@@ -228,7 +234,39 @@ async function loadChat(chatId) {
         
         chatArea.innerHTML = '';
         if (data.messages && data.messages.length > 0) {
-            data.messages.forEach(msg => {
+            const total = data.messages.length;
+            const hiddenCount = Math.max(0, total - MAX_RENDERED_MESSAGES);
+            const visible = hiddenCount > 0 ? data.messages.slice(hiddenCount) : data.messages;
+
+            if (hiddenCount > 0) {
+                const hint = document.createElement('div');
+                hint.className = 'message-row assistant';
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                const btn = document.createElement('button');
+                btn.textContent = `Show ${hiddenCount} earlier message${hiddenCount === 1 ? '' : 's'}`;
+                btn.style.cssText = 'background:transparent;border:1px dashed rgba(255,255,255,0.15);color:var(--text-muted);font-size:0.8rem;padding:6px 14px;border-radius:12px;cursor:pointer;font-family:inherit;';
+                contentDiv.appendChild(btn);
+                hint.appendChild(contentDiv);
+                chatArea.appendChild(hint);
+                btn.addEventListener('click', () => {
+                    const beforeH = chatArea.scrollHeight;
+                    const frag = document.createDocumentFragment();
+                    data.messages.slice(0, hiddenCount).forEach(msg => {
+                        let cmds = [];
+                        if (msg.commands_json) { try { cmds = JSON.parse(msg.commands_json); } catch(e) {} }
+                        addMessage(msg.role, msg.content, msg.thinking || '', cmds, true, frag, true);
+                    });
+                    chatArea.insertBefore(frag, hint);
+                    hint.remove();
+                    // Keep the same content in view after inserting above.
+                    const delta = chatArea.scrollHeight - beforeH;
+                    if (delta > 0) chatContainer.scrollTop += delta;
+                });
+                logger.debug('Rendered last %d of %d messages', visible.length, total);
+            }
+
+            visible.forEach(msg => {
                 let commands = [];
                 if (msg.commands_json) {
                     try { commands = JSON.parse(msg.commands_json); } catch(e) {}
@@ -694,7 +732,7 @@ function renderQueue() {
 /* ═══════════════════════════════════════════════════════════════
    Chat messages
    ═══════════════════════════════════════════════════════════════ */
-function addMessage(role, content, thinking = '', commands = [], historical = false) {
+function addMessage(role, content, thinking = '', commands = [], historical = false, parent = null, noScroll = false) {
     const row = document.createElement('div');
     row.className = `message-row ${role}`;
     const contentDiv = document.createElement('div');
@@ -730,7 +768,12 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                 chat_id: currentChatId,
                 historical: historical
             };
-            activeCommandGroup = group;
+            // Only live renders should own the active group. Historical
+            // renders (loading a past chat) must not clobber the state
+            // used by executeTask to decide whether the queue is busy.
+            if (!historical) {
+                activeCommandGroup = group;
+            }
             let remainingCommands = [...commands];
             const preBlocks = bubble.querySelectorAll('pre');
             preBlocks.forEach((preEl) => {
@@ -762,8 +805,8 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
     }
     contentDiv.appendChild(bubble);
     row.appendChild(contentDiv);
-    chatArea.appendChild(row);
-    scrollToBottom();
+    (parent || chatArea).appendChild(row);
+    if (!noScroll) scrollToBottom();
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -865,7 +908,13 @@ function createCommandSection(commands, group = null) {
     commands.forEach((cmd) => {
         const commandCode = cmd.code || '';
         const card = document.createElement('div');
-        card.className = 'command-card expanded';
+        // Historical cards render collapsed on first paint. Rendering
+        // them expanded then collapsing caused a full layout + syntax
+        // highlight pass on every code block — the main cause of slow
+        // loadChat on long chats. Live cards start expanded so the user
+        // sees the command they are about to approve.
+        const isHistorical = !!(group && group.historical);
+        card.className = isHistorical ? 'command-card' : 'command-card expanded';
         card.dataset.command = commandCode;
         card.dataset.commandText = commandCode;
         card.dataset.statusText = 'PENDING APPROVAL';
@@ -972,6 +1021,16 @@ function createCommandSection(commands, group = null) {
         card.appendChild(bodyWrapper);
         cmdSection.appendChild(card);
         void card.offsetHeight;
+        if (isHistorical) {
+            // Start collapsed — set the header title to show "$ <command>"
+            // directly, skipping the smooth transition.
+            const titleEl = card.querySelector('.command-header-title');
+            if (titleEl) {
+                titleEl.textContent = `$ ${commandCode}`;
+                titleEl.classList.add('is-command');
+                titleEl.style.color = 'var(--text-sub)';
+            }
+        }
     });
     return cmdSection;
 }
