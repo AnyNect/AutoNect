@@ -1434,29 +1434,11 @@ async function handleAllow(card, onComplete = null) {
    File upload UI helpers
    ═══════════════════════════════════════════════════════════════ */
 
-const FALLBACK_EXTENSIONS = [
-  // Minimal fallback so the UI works before /api/supported-extensions
-  // returns. The real list is fetched at startup; see loadSupportedExtensions().
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.rtf', '.epub',
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.heic', '.heif',
-  '.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg', '.opus',
-  '.mp4', '.webm', '.mov', '.avi', '.mkv',
-  '.txt', '.csv', '.tsv', '.json', '.jsonc', '.xml', '.yaml', '.yml',
-  '.log', '.ini', '.conf', '.cfg', '.toml', '.env', '.properties', '.sql', '.graphql',
-  '.html', '.css', '.scss', '.sass', '.less', '.vue', '.svelte', '.astro',
-  '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp',
-  '.cs', '.java', '.kt', '.kts', '.scala', '.swift', '.go', '.rs', '.rb', '.php',
-  '.dart', '.lua', '.r', '.m', '.jl', '.ex', '.exs', '.clj', '.erl', '.hs',
-  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-  '.md', '.markdown', '.tex', '.rst', '.adoc'
-];
-
-// Set of bare extensions (no leading dot), lowercased. Populated from
-// /api/supported-extensions at startup; falls back to FALLBACK_EXTENSIONS
-// until that fetch completes (or if it fails).
-let SUPPORTED_EXTENSIONS = new Set(
-  FALLBACK_EXTENSIONS.map(e => e.replace(/^\./, '').toLowerCase())
-);
+// Authoritative extension list comes from GET /api/supported-extensions
+// (backed by src/web/static/supported-extensions.json). Nothing is
+// hardcoded here: if the fetch has not completed yet, nothing is
+// accepted. That matches the server, which also validates by this list.
+let SUPPORTED_EXTENSIONS = new Set();
 
 async function loadSupportedExtensions() {
   try {
@@ -1464,39 +1446,18 @@ async function loadSupportedExtensions() {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     const list = Array.isArray(data.extensions) ? data.extensions : [];
-    if (list.length) {
-      SUPPORTED_EXTENSIONS = new Set(
-        list.map(e => String(e).replace(/^\./, '').toLowerCase())
-      );
-      logger.info('Loaded ' + SUPPORTED_EXTENSIONS.size + ' supported extensions');
-    }
+    SUPPORTED_EXTENSIONS = new Set(
+      list.map(e => String(e).replace(/^\./, '').toLowerCase())
+    );
+    logger.info('Loaded ' + SUPPORTED_EXTENSIONS.size + ' supported extensions');
   } catch (e) {
-    logger.warn('Falling back to built-in extension list:', e.message);
+    logger.warn('Could not load supported extensions; uploads disabled:', e.message);
   }
 }
 
-const SUPPORTED_MIME_TYPES = [
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml',
-  'text/plain', 'text/csv', 'application/json', 'application/xml', 'text/yaml',
-  'text/x-python', 'text/javascript', 'text/typescript', 'text/jsx', 'text/tsx',
-  'text/x-c', 'text/x-c++', 'text/x-go', 'text/x-rust', 'text/x-ruby', 'text/x-php',
-  'text/x-java', 'text/x-kotlin', 'text/x-scala', 'text/x-swift',
-  'text/x-shellscript', 'application/x-bash', 'text/x-powershell',
-  'text/html', 'text/css', 'text/x-scss', 'text/x-sass', 'text/x-less'
-];
-
 function isFileSupported(file) {
   const ext = file.name.split('.').pop().toLowerCase();
-  if (SUPPORTED_EXTENSIONS.has(ext)) return true;
-  if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
-  return false;
+  return SUPPORTED_EXTENSIONS.has(ext);
 }
 
 let attachedFiles = [];
