@@ -431,6 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.innerWidth <= 768) sidebar.classList.remove('sidebar-open');
     }
     loadChatList();
+    loadSupportedExtensions();
 });
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1433,35 +1434,46 @@ async function handleAllow(card, onComplete = null) {
    File upload UI helpers
    ═══════════════════════════════════════════════════════════════ */
 
-const SUPPORTED_EXTENSIONS = [
-  // Documents & eBooks
+const FALLBACK_EXTENSIONS = [
+  // Minimal fallback so the UI works before /api/supported-extensions
+  // returns. The real list is fetched at startup; see loadSupportedExtensions().
   '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.rtf', '.epub',
-
-  // Images
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.heic', '.heif',
-
-  // Audio (Gemini, OpenAI Audio / Whisper)
   '.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg', '.opus',
-
-  // Video (Gemini, OpenAI Multimodal)
   '.mp4', '.webm', '.mov', '.avi', '.mkv',
-
-  // Data, Configuration & Queries
-  '.txt', '.csv', '.tsv', '.json', '.jsonc', '.xml', '.yaml', '.yml', 
+  '.txt', '.csv', '.tsv', '.json', '.jsonc', '.xml', '.yaml', '.yml',
   '.log', '.ini', '.conf', '.cfg', '.toml', '.env', '.properties', '.sql', '.graphql',
-
-  // Web & UI Frameworks
   '.html', '.css', '.scss', '.sass', '.less', '.vue', '.svelte', '.astro',
-
-  // Programming & Scripting Languages
   '.py', '.js', '.ts', '.jsx', '.tsx', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp',
   '.cs', '.java', '.kt', '.kts', '.scala', '.swift', '.go', '.rs', '.rb', '.php',
   '.dart', '.lua', '.r', '.m', '.jl', '.ex', '.exs', '.clj', '.erl', '.hs',
   '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-
-  // Markup & Documentation
-  '.md', '.markdown', '.tex', '.rst', '.adoc',
+  '.md', '.markdown', '.tex', '.rst', '.adoc'
 ];
+
+// Set of bare extensions (no leading dot), lowercased. Populated from
+// /api/supported-extensions at startup; falls back to FALLBACK_EXTENSIONS
+// until that fetch completes (or if it fails).
+let SUPPORTED_EXTENSIONS = new Set(
+  FALLBACK_EXTENSIONS.map(e => e.replace(/^\./, '').toLowerCase())
+);
+
+async function loadSupportedExtensions() {
+  try {
+    const resp = await fetch('/api/supported-extensions');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const list = Array.isArray(data.extensions) ? data.extensions : [];
+    if (list.length) {
+      SUPPORTED_EXTENSIONS = new Set(
+        list.map(e => String(e).replace(/^\./, '').toLowerCase())
+      );
+      logger.info('Loaded ' + SUPPORTED_EXTENSIONS.size + ' supported extensions');
+    }
+  } catch (e) {
+    logger.warn('Falling back to built-in extension list:', e.message);
+  }
+}
 
 const SUPPORTED_MIME_TYPES = [
   'application/pdf',
@@ -1481,8 +1493,8 @@ const SUPPORTED_MIME_TYPES = [
 ];
 
 function isFileSupported(file) {
-  const ext = '.' + file.name.split('.').pop().toLowerCase();
-  if (SUPPORTED_EXTENSIONS.includes(ext)) return true;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (SUPPORTED_EXTENSIONS.has(ext)) return true;
   if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
   return false;
 }

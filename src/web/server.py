@@ -113,6 +113,16 @@ _PLACEHOLDER_TITLES = {
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+
+SUPPORTED_EXTENSIONS_PATH = STATIC_DIR / "supported-extensions.json"
+try:
+    _raw = json.loads(SUPPORTED_EXTENSIONS_PATH.read_text(encoding="utf-8"))
+    SUPPORTED_EXTENSIONS = frozenset(str(e).lower().lstrip(".") for e in _raw)
+    logger.info("Loaded %d supported file extensions", len(SUPPORTED_EXTENSIONS))
+except Exception:
+    logger.warning("Could not load %s; uploads will not be extension-validated",
+                   SUPPORTED_EXTENSIONS_PATH)
+    SUPPORTED_EXTENSIONS = frozenset()
 INDEX_HTML = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 
 SYSTEM_PROMPT_PATH = Path("src/prompts/system.txt")
@@ -681,6 +691,13 @@ async def evaluate_browser(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── Supported extensions (single source of truth) ──
+
+@app.get("/api/supported-extensions")
+async def supported_extensions():
+    return JSONResponse(content={"extensions": sorted(SUPPORTED_EXTENSIONS)})
+
+
 # ── File upload ──
 
 @app.post("/api/upload")
@@ -692,6 +709,15 @@ async def upload_file(file: UploadFile = File(...)):
     content = await file.read()
     file_name = file.filename
     mime_type = file.content_type or "application/octet-stream"
+
+    ext = Path(file_name).suffix.lower().lstrip(".")
+    if SUPPORTED_EXTENSIONS and ext not in SUPPORTED_EXTENSIONS:
+        logger.warning("Rejected upload (unsupported extension): %s", file_name)
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unsupported file extension: .{ext or '(none)'}"},
+        )
+
     selector = provider.selectors.get("file_input", "input[type='file']")
 
     loop = asyncio.get_running_loop()
