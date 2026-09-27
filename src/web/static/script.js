@@ -1473,18 +1473,19 @@ function showAttachedFiles() {
         return;
     }
     container.style.display = 'flex';
-    container.innerHTML = attachedFiles.map((file, index) =>
-        `<span class="file-chip">
-            <span class="file-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg></span>
-            <span class="file-meta">
-                <span class="file-name">${escapeHtml(file.name)}</span>
-                <span class="file-size">${(file.size / 1024).toFixed(1)} KB</span>
+    container.innerHTML = attachedFiles.map((file, index) => {
+        const ext = (file.name.split('.').pop() || '?').slice(0, 4).toUpperCase();
+        return `<span class="attach-pill attach-pill--file">
+            <span class="attach-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg></span>
+            <span class="attach-meta">
+                <span class="attach-label">${escapeHtml(file.name)}</span>
+                <span class="attach-sub">${ext} &middot; ${(file.size / 1024).toFixed(1)} KB</span>
             </span>
-            <span class="remove-file" data-index="${index}" title="Remove">&times;</span>
-        </span>`
-    ).join('');
+            <span class="attach-remove" data-index="${index}" title="Remove">&times;</span>
+        </span>`;
+    }).join('');
 
-    container.querySelectorAll('.remove-file').forEach(el => {
+    container.querySelectorAll('.attach-remove').forEach(el => {
         el.addEventListener('click', function() {
             const idx = parseInt(this.dataset.index, 10);
             if (!isNaN(idx)) {
@@ -1528,15 +1529,19 @@ function renderPasteChips() {
     row.style.display = 'flex';
     row.innerHTML = pasteChips.map(c => {
         const label = c.expanded ? 'Hide' : 'Show';
-        return '<span class="paste-chip">Pasted text &middot; ' +
-            c.charCount.toLocaleString() + ' chars ' +
-            '<span class="paste-toggle" data-chip-id="' + c.id + '">' + label + '</span>' +
-            '<span class="remove-paste" data-chip-id="' + c.id + '">&times;</span></span>';
+        return '<span class="attach-pill attach-pill--paste">' +
+            '<span class="attach-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></span>' +
+            '<span class="attach-meta">' +
+                '<span class="attach-label">Pasted text</span>' +
+                '<span class="attach-sub">' + c.charCount.toLocaleString() + ' chars</span>' +
+            '</span>' +
+            '<span class="attach-action" data-chip-id="' + c.id + '">' + label + '</span>' +
+            '<span class="attach-remove" data-chip-id="' + c.id + '">&times;</span></span>';
     }).join('');
-    row.querySelectorAll('.paste-toggle').forEach(el => {
+    row.querySelectorAll('.attach-action').forEach(el => {
         el.onclick = function() { toggleChip(parseInt(this.dataset.chipId, 10)); };
     });
-    row.querySelectorAll('.remove-paste').forEach(el => {
+    row.querySelectorAll('.attach-remove').forEach(el => {
         el.onclick = function() { removeChip(parseInt(this.dataset.chipId, 10)); };
     });
 }

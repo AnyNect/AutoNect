@@ -255,109 +255,97 @@
             align-items: center;
         }
 
-        /* ── File upload chip container ── */
-        #attached-files {
+        /* ── Attachment rows (files + pastes share one pill language) ── */
+        #attached-files, #paste-chip-row {
             display: none;
-            gap: 6px;
+            gap: 8px;
             flex-wrap: wrap;
-            padding: 4px 0 8px 0;
+            padding: 6px 0 0 0;
             width: 100%;
         }
-        .file-chip {
-            background: linear-gradient(135deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04));
-            padding: 6px 8px 6px 10px;
-            border-radius: 10px;
-            font-size: 0.72rem;
+        .attach-pill {
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            color: var(--text-secondary);
-            border: 1px solid rgba(255,255,255,0.09);
-            max-width: 260px;
+            gap: 10px;
+            padding: 8px 10px 8px 8px;
+            border-radius: 11px;
+            background: rgba(255,255,255,0.045);
+            border: 1px solid rgba(255,255,255,0.08);
+            max-width: 340px;
             transition: border-color 0.15s, background 0.15s;
         }
-        .file-chip:hover {
-            border-color: rgba(255,255,255,0.18);
-            background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06));
+        .attach-pill:hover {
+            border-color: rgba(255,255,255,0.16);
+            background: rgba(255,255,255,0.07);
         }
-        .file-chip .file-icon {
+        .attach-pill .attach-icon {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 24px;
-            height: 24px;
-            border-radius: 6px;
-            background: rgba(147, 197, 253, 0.14);
-            color: #93c5fd;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
             flex-shrink: 0;
         }
-        .file-chip .file-meta {
+        .attach-pill .attach-icon svg { width: 17px; height: 17px; }
+        .attach-pill .attach-meta {
             display: flex;
             flex-direction: column;
             min-width: 0;
             line-height: 1.25;
         }
-        .file-chip .file-name {
+        .attach-pill .attach-label {
             color: var(--text-primary, #e5e7eb);
+            font-size: 0.85rem;
             font-weight: 500;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 180px;
-            display: block;
+            max-width: 210px;
         }
-        .file-chip .file-size {
-            color: var(--text-tertiary, #6b7280);
-            font-size: 0.65rem;
+        .attach-pill .attach-sub {
+            color: #6b7280;
+            font-size: 0.72rem;
             font-variant-numeric: tabular-nums;
         }
-        .file-chip .remove-file {
+        .attach-pill .attach-action {
             cursor: pointer;
-            color: #6b7280;
-            font-weight: bold;
-            font-size: 0.9rem;
+            color: #8b8f98;
+            font-size: 0.78rem;
+            padding: 4px 8px;
+            border-radius: 5px;
+            flex-shrink: 0;
+            transition: color 0.15s, background 0.15s;
+            user-select: none;
+        }
+        .attach-pill .attach-action:hover {
+            color: #e5e7eb;
+            background: rgba(255,255,255,0.08);
+        }
+        .attach-pill .attach-remove {
+            cursor: pointer;
+            color: #8b8f98;
+            font-size: 1rem;
             line-height: 1;
-            padding: 2px 4px;
-            border-radius: 4px;
+            padding: 4px 6px;
+            border-radius: 5px;
             flex-shrink: 0;
             transition: color 0.15s, background 0.15s;
         }
-        .file-chip .remove-file:hover {
+        .attach-pill .attach-remove:hover {
             color: #ef4444;
             background: rgba(239, 68, 68, 0.12);
         }
-        /* ── Paste chip ── */
-        #paste-chip-row {
-            display: none;
-            gap: 4px;
-            flex-wrap: wrap;
-            padding: 4px 0 0 0;
-            width: 100%;
+        /* colour per kind */
+        .attach-pill--file .attach-icon {
+            background: rgba(96, 165, 250, 0.18);
+            color: #60a5fa;
         }
-        .paste-chip {
-            background: rgba(147, 197, 253, 0.10);
-            padding: 4px 8px;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--text-secondary);
-            border: 1px solid rgba(147, 197, 253, 0.22);
+        .attach-pill--paste .attach-icon {
+            background: rgba(212, 175, 55, 0.16);
+            color: #d4af37;
         }
-        .paste-chip .paste-toggle {
-            cursor: pointer;
-            color: #93c5fd;
-            text-decoration: underline;
-        }
-        .paste-chip .paste-toggle:hover { color: #bfdbfe; }
-        .paste-chip .remove-paste {
-            cursor: pointer;
-            color: #f87171;
-            font-weight: bold;
-            margin-left: 2px;
-        }
-        .paste-chip .remove-paste:hover { color: #ef4444; }
+        .attach-pill--paste .attach-sub { color: #b8973a; }
 
         /* ── Upload button (paperclip) ── */
         .upload-icon-btn {
@@ -622,7 +610,7 @@
     </div>
 </div>
 
-<script src="/static/script.js?v=23"></script>
+<script src="/static/script.js?v=25"></script>
 
 <!-- Terminal Modal -->
 <div class="terminal-modal-overlay" id="terminal-modal">
