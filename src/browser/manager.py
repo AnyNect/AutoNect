@@ -1,10 +1,42 @@
 import logging
+import time
 from playwright.sync_api import sync_playwright
 from patchright.sync_api import sync_playwright as patchright_playwright
 
 from src.core.config import config
 
 logger = logging.getLogger(__name__)
+
+
+def _goto_with_retry(page, url, attempts=4, logger=None):
+    """Navigate, retrying on transient Chromium network errors.
+
+    ERR_NETWORK_CHANGED fires when Docker recreates a veth/bridge
+    interface mid-navigation. It is not a real connectivity failure,
+    so a short backoff retry almost always succeeds.
+    """
+    transient = (
+        "ERR_NETWORK_CHANGED", "ERR_NET_RESET", "ERR_CONNECTION_RESET",
+        "ERR_CONNECTION_CLOSED", "ERR_TIMED_OUT", "ERR_ABORTED",
+    )
+    last = None
+    for i in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            last = e
+            if not any(t in str(e) for t in transient):
+                raise
+            if logger:
+                logger.warning("goto %s failed (attempt %d/%d): %s",
+                               url, i, attempts, str(e).splitlines()[0])
+            time.sleep(2 * i)
+    raise last
 
 
 class BrowserManager:
@@ -90,13 +122,11 @@ class BrowserManager:
                 logger.info("Reusing existing page: %s", self.page.url)
                 if "chat.deepseek.com" not in self.page.url:
                     logger.debug("Navigating existing page to DeepSeek")
-                    self.page.goto("https://chat.deepseek.com")
-                    self.page.wait_for_load_state("networkidle")
+                    _goto_with_retry(self.page, "https://chat.deepseek.com", logger=logger)
             else:
                 self.page = self.context.new_page()
                 logger.info("No existing page, creating new one")
-                self.page.goto("https://chat.deepseek.com")
-                self.page.wait_for_load_state("networkidle")
+                _goto_with_retry(self.page, "https://chat.deepseek.com", logger=logger)
 
         logger.info("Browser ready")
         return self.page
