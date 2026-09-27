@@ -8,67 +8,57 @@ logger = logging.getLogger(__name__)
 class DOMObserver:
     """
     Observes DOM mutations on a Playwright page and queues events for processing.
+
+    Scope is deliberately narrow: only title changes are reported. Earlier
+    versions forwarded every MutationObserver record, each carrying the full
+    innerText of the mutated node. On a streaming LLM page that is thousands
+    of synchronous JS->Python binding calls per second, which exhausts the
+    Playwright driver's heap over a long session
+    ("FATAL ERROR: Ineffective mark-compacts near heap limit") and destroys
+    the page. The only consumer of these events is the chat-title sync, so
+    only the title is sent now.
     """
 
-    def __init__(self, page):
-        """
-        Initialize the DOM observer.
+    _MAX_QUEUED_EVENTS = 200
 
-        Args:
-            page: Playwright page object to observe.
-        """
-        self.page = page
-        self.events = queue.Queue()
-        self.listeners = []
-        self._running = False
-
-    # JS injected into every new document to install a MutationObserver
-    # that reports events back to Python via autonect_dom_event.
-    #
-    # This runs as an init script (see start()) so it survives page.goto(),
-    # and once via evaluate() so it also covers the document that is
-    # currently loaded when start() is called.
     _OBSERVER_JS = """
         (() => {
             const install = () => {
-                if (window.__autonect_observer) {
-                    // Already installed on this document; do not double-register.
-                    return;
-                }
-                const observer = new MutationObserver((mutations) => {
-                    const pageTitle = document.title || '';
-                    const pagePath = location.pathname || '';
-                    for (const mutation of mutations) {
-                        let eventData = { type: mutation.type, title: pageTitle, path: pagePath };
-                        if (mutation.type === 'characterData') {
-                            const parent = mutation.target.parentElement;
-                            eventData.target = parent ? (parent.className || '') : '';
-                            eventData.text = parent ? (parent.innerText || '')
-                                                    : (mutation.target.textContent || '');
-                        } else if (mutation.type === 'childList') {
-                            eventData.target = mutation.target.className || '';
-                            eventData.text = mutation.target.innerText || '';
-                        } else if (mutation.type === 'attributes') {
-                            eventData.target = mutation.target.className || '';
-                            eventData.attributeName = mutation.attributeName;
-                            eventData.attributeValue = mutation.target.getAttribute(mutation.attributeName);
-                        }
-                        try { window.autonect_dom_event(eventData); } catch (e) { /* swallow */ }
-                    }
-                });
-                observer.observe(document.body, {
+                if (window.__autonect_observer) return;
+
+                let lastTitle = document.title || '';
+
+                const emit = () => {
+                    const t = document.title || '';
+                    if (t === lastTitle) return;
+                    lastTitle = t;
+                    try {
+                        window.autonect_dom_event({
+                            type: 'title',
+                            title: t,
+                            path: location.pathname || '',
+                        });
+                    } catch (e) { /* swallow */ }
+                };
+
+                const observer = new MutationObserver(emit);
+                observer.observe(document.head || document.documentElement, {
                     childList: true,
                     subtree: true,
                     characterData: true,
-                    attributes: true,
-                    attributeFilter: ['class']
                 });
                 window.__autonect_observer = observer;
+
+                try {
+                    window.autonect_dom_event({
+                        type: 'title',
+                        title: document.title || '',
+                        path: location.pathname || '',
+                    });
+                } catch (e) { /* swallow */ }
             };
 
-            // init scripts run at document_start, before <body> exists.
-            // Defer installation until the DOM is ready.
-            if (document.body) {
+            if (document.head || document.body) {
                 install();
             } else if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', install, { once: true });
@@ -77,6 +67,12 @@ class DOMObserver:
             }
         })();
     """
+
+    def __init__(self, page):
+        self.page = page
+        self.events = queue.Queue(maxsize=self._MAX_QUEUED_EVENTS)
+        self.listeners = []
+        self._running = False
 
     def start(self):
         """
@@ -109,12 +105,22 @@ class DOMObserver:
     def handle_event(self, event):
         """
         Callback function exposed to the browser to receive DOM events.
-        Puts the event into the internal queue.
-
-        Args:
-            event: Dictionary containing event data from the browser.
+        Puts the event into the internal queue (dropping the oldest entry
+        when the queue is full) and fans out to listeners.
         """
-        self.events.put(event)
+        try:
+            self.events.put_nowait(event)
+        except queue.Full:
+            # Drop the oldest, keep the newest: the queue exists only for
+            # debugging and must never grow without bound.
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.events.put_nowait(event)
+            except queue.Full:
+                pass
         for cb in self.listeners:
             try:
                 cb(event)

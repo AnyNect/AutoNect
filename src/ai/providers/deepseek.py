@@ -202,7 +202,7 @@ class DeepSeekProvider(AIProvider):
 
     def _inject_retry_observer(self):
         retry_selector = self.selectors["retry_button"]
-        self.page.evaluate(f"""
+        self._safe_evaluate(f"""
             () => {{
                 if (window.__autonect_retry_observer) return;
                 const observer = new MutationObserver(() => {{
@@ -258,12 +258,46 @@ class DeepSeekProvider(AIProvider):
 
         logger.info("Response finished")
 
+    def _safe_evaluate(self, expression, retries=3):
+        """page.evaluate that survives an execution-context loss.
+
+        DeepSeek can navigate or reload under us (e.g. the model's reply
+        triggers a route change, or the renderer restarts). Playwright then
+        raises "Execution context was destroyed" from the very next
+        evaluate. Re-wait for the document, then retry. A closed page or
+        a genuinely gone context is re-raised after the retries so the
+        caller fails loudly rather than returning empty text.
+        """
+        last = None
+        for attempt in range(1, retries + 1):
+            try:
+                return self.page.evaluate(expression)
+            except Exception as e:
+                msg = str(e)
+                if "Execution context was destroyed" not in msg and \
+                   "Cannot find context with specified id" not in msg and \
+                   "Target closed" not in msg:
+                    raise
+                last = e
+                logger.warning(
+                    "evaluate failed (context lost, attempt %d/%d): %s",
+                    attempt, retries, msg.splitlines()[0],
+                )
+                if attempt == retries:
+                    break
+                try:
+                    self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                time.sleep(0.5 * attempt)
+        raise last
+
     def get_response(self):
         self._wait_for_response()
         logger.info("Extracting response...")
 
         thinking_selector = self.selectors["thinking_block"]
-        thinking_text = self.page.evaluate(f"""
+        thinking_text = self._safe_evaluate(f"""
             () => {{
                 const blocks = document.querySelectorAll('{thinking_selector}');
                 if (blocks.length === 0) return '';
@@ -278,7 +312,7 @@ class DeepSeekProvider(AIProvider):
         lang_tag_selector = self.selectors["language_tag"]
         code_block_selector = self.selectors["code_block"]
 
-        answer_data = self.page.evaluate(f"""
+        answer_data = self._safe_evaluate(f"""
             () => {{
                 const containers = document.querySelectorAll('{container_selector}');
                 if (containers.length === 0) return {{ html: '', codeBlocks: [], commands: [] }};
