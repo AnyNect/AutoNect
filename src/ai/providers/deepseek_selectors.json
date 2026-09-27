@@ -8,5 +8,9 @@
   "code_block": ".md-code-block",
   "primary_button": "div[role=\"button\"].ds-button--primary:not(.ds-button--disabled)",
   "file_input": "input[type=\"file\"]",
-  "title_suffix": " - DSeek"
+  "title_suffix": " - DSeek",
+  "processing_svg_paths": [
+    "M2 4.88C2 3.68",
+    "M34,18 C34,9.163444"
+  ]
 }

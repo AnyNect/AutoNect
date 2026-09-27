@@ -23,6 +23,7 @@ except FileNotFoundError:
     SELECTORS = {
         "textarea": 'textarea[placeholder="Message DSeek"]',
         "send_button": 'div[role="button"].ds-button--primary.ds-button--filled:not(.ds-button--disabled)',
+        "processing_svg_paths": ["M2 4.88C2 3.68", "M34,18 C34,9.163444"],
         "retry_button": 'div[role="button"].ds-button--warning',
         "thinking_block": ".ds-think-content",
         "assistant_container": ".ds-assistant-message-main-content",
@@ -68,42 +69,128 @@ class DeepSeekProvider(AIProvider):
             self.connect()
             time.sleep(1)
 
-    def send_prompt(self, prompt):
-        self._ensure_page()
-        logger.info("Injecting prompt...")
-        textarea_selector = self.selectors["textarea"]
+    def _is_processing(self):
+        """True while DeepSeek is generating a reply.
 
-        for attempt in range(3):
+        The send slot morphs into a Stop button during generation. The
+        Stop icon's SVG path prefixes are stable (SVG geometry does not
+        rotate like class hashes). The ds-button--disabled class is NOT
+        usable here: an empty textarea shows the same class.
+        """
+        sigs = self.selectors.get("processing_svg_paths", [
+            "M2 4.88C2 3.68", "M34,18 C34,9.163444",
+        ])
+        sigs_js = json.dumps(sigs)
+        try:
+            return bool(self.page.evaluate(f"""
+                () => {{
+                    const sigs = {sigs_js};
+                    const btns = document.querySelectorAll(
+                        'div[role="button"].ds-button--primary.ds-button--circle'
+                    );
+                    for (const b of btns) {{
+                        for (const p of b.querySelectorAll('svg path')) {{
+                            const d = p.getAttribute('d') || '';
+                            for (const s of sigs) {{
+                                if (d.startsWith(s)) return true;
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+            """))
+        except Exception as e:
+            logger.warning("_is_processing evaluate failed: %s", e)
+            return False
+
+    def _wait_until_processing(self, timeout_ms=15000):
+        sigs = self.selectors.get("processing_svg_paths", [
+            "M2 4.88C2 3.68", "M34,18 C34,9.163444",
+        ])
+        sigs_js = json.dumps(sigs)
+        self.page.wait_for_function(f"""
+            () => {{
+                const sigs = {sigs_js};
+                const btns = document.querySelectorAll(
+                    'div[role="button"].ds-button--primary.ds-button--circle'
+                );
+                for (const b of btns) {{
+                    for (const p of b.querySelectorAll('svg path')) {{
+                        const d = p.getAttribute('d') || '';
+                        for (const s of sigs) {{
+                            if (d.startsWith(s)) return true;
+                        }}
+                    }}
+                }}
+                return false;
+            }}
+        """, timeout=timeout_ms)
+
+    def send_prompt(self, prompt, max_send_attempts=3):
+        self._ensure_page()
+        textarea_selector = self.selectors["textarea"]
+        send_btn_selector = self.selectors["send_button"]
+
+        for attempt in range(1, max_send_attempts + 1):
+            # If the model is already answering, do NOT resend - the
+            # previous send took.
+            if self._is_processing():
+                logger.info("Model is already answering; not resending (attempt %d)", attempt)
+                return
+
+            logger.info("Injecting prompt (attempt %d/%d)...", attempt, max_send_attempts)
+
             try:
                 self.page.wait_for_selector(textarea_selector, state="attached", timeout=5000)
-                break
             except Exception as e:
-                if attempt == 2:
+                if attempt == max_send_attempts:
                     logger.error("DeepSeek input not found after retries")
                     raise Exception("DeepSeek input not found after retries") from e
-                logger.warning("Textarea not ready, retrying (%d/3)...", attempt + 1)
+                logger.warning("Textarea not ready; reloading and retrying...")
+                try:
+                    self.page.reload()
+                    self.page.wait_for_load_state("networkidle")
+                except Exception as re:
+                    logger.warning("Reload failed: %s", re)
                 time.sleep(1)
+                continue
 
-        self.page.fill(textarea_selector, prompt)
+            self.page.fill(textarea_selector, prompt)
 
-        # Use send_button selector from config
-        send_btn_selector = self.selectors["send_button"]
-        try:
-            self.page.wait_for_function(
-                f"""
-                () => {{
-                    const btn = document.querySelector('{send_btn_selector}');
-                    return btn !== null;
-                }}
-                """,
-                timeout=10000
-            )
-            self.page.click(send_btn_selector)
-            logger.info("Prompt sent via button click")
-        except Exception as e:
-            logger.warning("Button click failed, falling back to Enter key: %s", e)
-            self.page.keyboard.press("Enter")
-            logger.info("Prompt sent via Enter key")
+            try:
+                self.page.wait_for_function(
+                    f"""
+                    () => {{
+                        const btn = document.querySelector('{send_btn_selector}');
+                        return btn !== null;
+                    }}
+                    """,
+                    timeout=10000
+                )
+                self.page.click(send_btn_selector)
+                logger.info("Prompt sent via button click")
+            except Exception as e:
+                logger.warning("Button click failed, falling back to Enter key: %s", e)
+                self.page.keyboard.press("Enter")
+                logger.info("Prompt sent via Enter key")
+
+            # Confirm the send took: the Stop button must appear.
+            try:
+                self._wait_until_processing(timeout_ms=10000)
+                logger.info("Send confirmed: Stop button appeared")
+                return
+            except Exception:
+                logger.warning("Send not confirmed on attempt %d/%d", attempt, max_send_attempts)
+                if attempt < max_send_attempts:
+                    logger.info("Reloading page and retrying send")
+                    try:
+                        self.page.reload()
+                        self.page.wait_for_load_state("networkidle")
+                    except Exception as re:
+                        logger.warning("Reload failed: %s", re)
+                    time.sleep(1)
+
+        raise Exception(f"Failed to confirm prompt was sent after {max_send_attempts} attempts")
 
     def _click_send(self):
         logger.info("Clicking send button...")
@@ -138,36 +225,35 @@ class DeepSeekProvider(AIProvider):
         logger.info("Waiting for response (retry observer active)...")
         self._inject_retry_observer()
 
-        # Use primary_button selector for detecting completion
-        primary_btn_selector = self.selectors["primary_button"]
-        self.page.evaluate(f"""
-            () => {{
-                window.__autonect_done = false;
-                const observer = new MutationObserver((mutations) => {{
-                    for (const m of mutations) {{
-                        if (m.type === 'attributes' && m.attributeName === 'class') {{
-                            const targetClass = m.target.className;
-                            if (targetClass.includes('ds-button--primary') &&
-                                targetClass.includes('ds-button--disabled')) {{
-                                window.__autonect_done = true;
-                                observer.disconnect();
-                                return;
+        # The Stop button exists only while the server is generating.
+        # Wait until it disappears. Do NOT use the send button's
+        # ds-button--disabled class as the done signal: an empty
+        # textarea shows the same class, so we would extract early and
+        # read the previous assistant message.
+        sigs = self.selectors.get("processing_svg_paths", [
+            "M2 4.88C2 3.68", "M34,18 C34,9.163444",
+        ])
+        sigs_js = json.dumps(sigs)
+        try:
+            self.page.wait_for_function(f"""
+                () => {{
+                    const sigs = {sigs_js};
+                    const btns = document.querySelectorAll(
+                        'div[role="button"].ds-button--primary.ds-button--circle'
+                    );
+                    for (const b of btns) {{
+                        for (const p of b.querySelectorAll('svg path')) {{
+                            const d = p.getAttribute('d') || '';
+                            for (const s of sigs) {{
+                                if (d.startsWith(s)) return false;
                             }}
                         }}
                     }}
-                }});
-                observer.observe(document.body, {{
-                    attributes: true,
-                    subtree: true,
-                    attributeFilter: ['class']
-                }});
-            }}
-        """)
-
-        try:
-            self.page.wait_for_function("window.__autonect_done", timeout=self.response_timeout)
+                    return true;
+                }}
+            """, timeout=self.response_timeout)
         except Exception:
-            logger.error("DeepSeek response timeout")
+            logger.error("DeepSeek response timeout (Stop button never disappeared)")
             raise TimeoutError("DeepSeek response timeout")
 
         logger.info("Response finished")
