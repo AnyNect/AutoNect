@@ -136,7 +136,8 @@ except FileNotFoundError:
 MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
 TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
 FALLBACK_TERMINALS = config.get("terminal", "fallback_terminals", default=["gnome-terminal", "xterm"])
-OUTPUT_FILE_THRESHOLD = 7 * 1024  # 7 KB
+OUTPUT_FILE_THRESHOLD = 50 * 1024  # 50 KB
+PER_COMMAND_TAIL_BYTES = 10 * 1024  # 10 KB per command when over the ceiling
 
 # ── Output cache ──
 _output_cache = {}  # key: output_id, value: stdout string
@@ -310,6 +311,15 @@ class NavigateRequest(BaseModel):
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def _tail_bytes(text: str, n: int) -> str:
+    """Return the last n bytes of text, with a marker when truncated."""
+    if not text:
+        return ""
+    if len(text) <= n:
+        return text
+    return f"...[truncated, showing last {n} bytes]\n" + text[-n:]
+
 
 def build_wrapped_command_output(command: str, exit_code: int, stdout: str, stderr: str) -> str:
     return (
@@ -496,27 +506,42 @@ async def ai_feedback(request: AIFeedbackRequest):
     def send_wrapped_and_get():
         stdout_content = stdout
         command_display = request.command or ""
+        cmds = request.commands or []
+        is_multi = bool(cmds) and not stdout_content
 
-        if request.commands and not stdout_content:
-            combined_output = ""
-            combined_command = ""
-            for cmd in request.commands:
-                combined_output += f"Command: {cmd.get('command', '')}\n"
-                combined_output += f"Exit code: {cmd.get('exit_code', -1)}\n"
-                combined_output += f"stdout:\n{cmd.get('stdout', '')}\n"
-                combined_output += f"stderr:\n{cmd.get('stderr', '')}\n\n"
-                if not combined_command:
-                    combined_command = cmd.get('command', '')
-                else:
-                    combined_command += " | " + cmd.get('command', '')
-            if len(combined_output) > OUTPUT_FILE_THRESHOLD:
-                stdout_content = combined_output
-                command_display = combined_command or "multiple commands"
+        def _assemble(cmd_list):
+            out = ""
+            for cmd in cmd_list:
+                out += f"Command: {cmd.get('command', '')}\n"
+                out += f"Exit code: {cmd.get('exit_code', -1)}\n"
+                out += f"stdout:\n{cmd.get('stdout', '')}\n"
+                out += f"stderr:\n{cmd.get('stderr', '')}\n\n"
+            return out
+
+        if is_multi:
+            stdout_content = _assemble(cmds)
+            command_display = " | ".join(c.get('command', '') for c in cmds) or "multiple commands"
+
+        # Ceiling: above OUTPUT_FILE_THRESHOLD (50 KB), truncate. Multi-command
+        # runs get per-command tails (stdout and stderr each keep only their
+        # last PER_COMMAND_TAIL_BYTES); a single command's blob gets a tail of
+        # the whole thing. Applied BEFORE the file-vs-inline decision so the
+        # attached file is bounded too.
+        if stdout_content and len(stdout_content) > OUTPUT_FILE_THRESHOLD:
+            if is_multi:
+                cmds = [
+                    {**c,
+                     'stdout': _tail_bytes(c.get('stdout', ''), PER_COMMAND_TAIL_BYTES),
+                     'stderr': _tail_bytes(c.get('stderr', ''), PER_COMMAND_TAIL_BYTES)}
+                    for c in cmds
+                ]
+                stdout_content = _assemble(cmds)
+                command_display = " | ".join(c.get('command', '') for c in cmds) or command_display
             else:
-                wrapped = build_wrapped_commands_output(request.commands)
-                provider.send_prompt(wrapped)
-                return provider.get_response()
+                stdout_content = _tail_bytes(stdout_content, PER_COMMAND_TAIL_BYTES)
 
+        # Still over the ceiling after truncation (many commands x 10 KB)?
+        # Attach as a file. Otherwise inline.
         if stdout_content and len(stdout_content) > OUTPUT_FILE_THRESHOLD:
             temp_file = TMP_DIR / f"output_{uuid.uuid4().hex[:8]}.txt"
             try:
@@ -535,7 +560,7 @@ async def ai_feedback(request: AIFeedbackRequest):
             except Exception as e:
                 logger.error("Failed to upload output file: %s", e)
                 truncated = stdout_content[:1000] + "...\n[Output truncated, too large to include]"
-                if request.commands:
+                if cmds:
                     wrapped = f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display}\nstdout:\n{truncated}\n[/SYSTEM_COMMAND_OUTPUT]"
                 else:
                     wrapped = build_wrapped_command_output(
@@ -549,8 +574,8 @@ async def ai_feedback(request: AIFeedbackRequest):
                 except Exception:
                     pass
         else:
-            if request.commands:
-                wrapped = build_wrapped_commands_output(request.commands)
+            if cmds:
+                wrapped = build_wrapped_commands_output(cmds)
             else:
                 wrapped = build_wrapped_command_output(
                     request.command, request.exit_code, stdout_content or "", request.stderr or ""
