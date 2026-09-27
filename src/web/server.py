@@ -412,7 +412,39 @@ async def chat(request: ChatRequest):
         logger.debug("Existing session: %s", request.session_id)
 
     def send_and_get():
-        provider.send_prompt(full_prompt)
+        # If the assembled prompt exceeds the output-file threshold, attach
+        # it as a file (mirroring the large-command-output path) instead of
+        # filling the textarea, so nothing is truncated.
+        if len(full_prompt) > OUTPUT_FILE_THRESHOLD:
+            temp_file = TMP_DIR / f"prompt_{uuid.uuid4().hex[:8]}.txt"
+            try:
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    f.write(full_prompt)
+                logger.info(
+                    "Large prompt saved to %s (%s bytes)",
+                    temp_file, temp_file.stat().st_size,
+                )
+                selector = provider.selectors.get("file_input", "input[type='file']")
+                provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+                provider.page.set_input_files(selector, str(temp_file))
+                logger.info("Large prompt attached to DeepSeek: %s", temp_file.name)
+                provider.send_prompt(
+                    "[USER_PROMPT]\n"
+                    "The user's full message is attached as a file. "
+                    "Read it and respond to it.\n"
+                    "[/USER_PROMPT]"
+                )
+            except Exception as e:
+                logger.error("Large-prompt file attach failed; sending inline: %s", e)
+                provider.send_prompt(full_prompt)
+            finally:
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception:
+                    pass
+        else:
+            provider.send_prompt(full_prompt)
         return provider.get_response()
 
     try:

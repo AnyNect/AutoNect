@@ -1504,14 +1504,32 @@ let pasteChips = [];  // [{id, text, charCount, expanded, anchor}]
 let pasteChipNextId = 1;
 
 function getEffectivePrompt() {
-    // Box value + every chip that is NOT currently spliced into the box
-    let result = promptInput.value;
-    for (const c of pasteChips) {
-        if (!c.expanded) {
-            result += (result ? '\n\n' : '') + c.text;
-        }
+    const box = promptInput.value;
+    if (pasteChips.length === 0) return box;
+
+    // Chips still hidden (not spliced into the box).
+    const collapsed = pasteChips.filter(c => !c.expanded);
+    if (collapsed.length === 0) return box;
+
+    // Interleave by the anchor captured at paste time. Anchor is a position
+    // in the box when the paste happened; clamp to current box length in
+    // case the user edited afterwards.
+    const byAnchor = [...collapsed].sort((a, b) => a.anchor - b.anchor);
+
+    const parts = [];
+    let cursor = 0;
+    for (const c of byAnchor) {
+        const a = Math.max(cursor, Math.min(c.anchor, box.length));
+        const seg = box.slice(cursor, a);
+        if (seg) parts.push(seg);
+        parts.push(c.text);
+        cursor = a;
     }
-    return result;
+    if (cursor < box.length) {
+        const seg = box.slice(cursor);
+        if (seg) parts.push(seg);
+    }
+    return parts.join('\n\n');
 }
 
 function updateSendBtnState() {
