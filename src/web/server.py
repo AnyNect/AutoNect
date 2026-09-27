@@ -136,8 +136,9 @@ except FileNotFoundError:
 MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
 TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
 FALLBACK_TERMINALS = config.get("terminal", "fallback_terminals", default=["gnome-terminal", "xterm"])
-OUTPUT_FILE_THRESHOLD = 50 * 1024  # 50 KB
-PER_COMMAND_TAIL_BYTES = 10 * 1024  # 10 KB per command when over the ceiling
+OUTPUT_FILE_THRESHOLD = 50 * 1024  # 50 KB: above this, output is tailed
+FILE_ATTACH_THRESHOLD = 7 * 1024   # 7 KB: above this, attach as a file
+PER_COMMAND_TAIL_BYTES = 7 * 1024  # 7 KB tail per command when over the ceiling
 
 # ── Output cache ──
 _output_cache = {}  # key: output_id, value: stdout string
@@ -522,12 +523,15 @@ async def ai_feedback(request: AIFeedbackRequest):
             stdout_content = _assemble(cmds)
             command_display = " | ".join(c.get('command', '') for c in cmds) or "multiple commands"
 
-        # Ceiling: above OUTPUT_FILE_THRESHOLD (50 KB), truncate. Multi-command
-        # runs get per-command tails (stdout and stderr each keep only their
-        # last PER_COMMAND_TAIL_BYTES); a single command's blob gets a tail of
-        # the whole thing. Applied BEFORE the file-vs-inline decision so the
-        # attached file is bounded too.
-        if stdout_content and len(stdout_content) > OUTPUT_FILE_THRESHOLD:
+        # Original (pre-truncation) size drives the file-vs-inline decision.
+        original_size = len(stdout_content) if stdout_content else 0
+
+        # Ceiling: above OUTPUT_FILE_THRESHOLD (50 KB), tail to the last
+        # PER_COMMAND_TAIL_BYTES (7 KB). Multi-command runs tail each
+        # command's stdout and stderr; a single command's blob is tailed
+        # whole. Truncation runs before the file-vs-inline decision so the
+        # attached file carries the tailed content.
+        if stdout_content and original_size > OUTPUT_FILE_THRESHOLD:
             if is_multi:
                 cmds = [
                     {**c,
@@ -540,9 +544,9 @@ async def ai_feedback(request: AIFeedbackRequest):
             else:
                 stdout_content = _tail_bytes(stdout_content, PER_COMMAND_TAIL_BYTES)
 
-        # Still over the ceiling after truncation (many commands x 10 KB)?
-        # Attach as a file. Otherwise inline.
-        if stdout_content and len(stdout_content) > OUTPUT_FILE_THRESHOLD:
+        # File if the ORIGINAL output exceeded FILE_ATTACH_THRESHOLD (7 KB);
+        # otherwise inline.
+        if stdout_content and original_size > FILE_ATTACH_THRESHOLD:
             temp_file = TMP_DIR / f"output_{uuid.uuid4().hex[:8]}.txt"
             try:
                 with open(temp_file, 'w', encoding='utf-8') as f:
