@@ -14,7 +14,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=4" />
+    <link rel="stylesheet" href="/static/styles.css?v=5" />
     <style>
         /* ── Xterm overrides ── */
         .xterm-viewport { background: var(--bg-card) !important; }
@@ -258,29 +258,106 @@
         /* ── File upload chip container ── */
         #attached-files {
             display: none;
-            gap: 4px;
+            gap: 6px;
             flex-wrap: wrap;
             padding: 4px 0 8px 0;
             width: 100%;
         }
         .file-chip {
-            background: rgba(255,255,255,0.08);
+            background: linear-gradient(135deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04));
+            padding: 6px 8px 6px 10px;
+            border-radius: 10px;
+            font-size: 0.72rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            border: 1px solid rgba(255,255,255,0.09);
+            max-width: 260px;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .file-chip:hover {
+            border-color: rgba(255,255,255,0.18);
+            background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06));
+        }
+        .file-chip .file-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            background: rgba(147, 197, 253, 0.14);
+            color: #93c5fd;
+            flex-shrink: 0;
+        }
+        .file-chip .file-meta {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            line-height: 1.25;
+        }
+        .file-chip .file-name {
+            color: var(--text-primary, #e5e7eb);
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 180px;
+            display: block;
+        }
+        .file-chip .file-size {
+            color: var(--text-tertiary, #6b7280);
+            font-size: 0.65rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .file-chip .remove-file {
+            cursor: pointer;
+            color: #6b7280;
+            font-weight: bold;
+            font-size: 0.9rem;
+            line-height: 1;
+            padding: 2px 4px;
+            border-radius: 4px;
+            flex-shrink: 0;
+            transition: color 0.15s, background 0.15s;
+        }
+        .file-chip .remove-file:hover {
+            color: #ef4444;
+            background: rgba(239, 68, 68, 0.12);
+        }
+        /* ── Paste chip ── */
+        #paste-chip-row {
+            display: none;
+            gap: 4px;
+            flex-wrap: wrap;
+            padding: 4px 0 0 0;
+            width: 100%;
+        }
+        .paste-chip {
+            background: rgba(147, 197, 253, 0.10);
             padding: 4px 8px;
             border-radius: 12px;
             font-size: 0.75rem;
             display: inline-flex;
             align-items: center;
-            gap: 4px;
+            gap: 6px;
             color: var(--text-secondary);
-            border: 1px solid rgba(255,255,255,0.06);
+            border: 1px solid rgba(147, 197, 253, 0.22);
         }
-        .file-chip .remove-file {
+        .paste-chip .paste-toggle {
+            cursor: pointer;
+            color: #93c5fd;
+            text-decoration: underline;
+        }
+        .paste-chip .paste-toggle:hover { color: #bfdbfe; }
+        .paste-chip .remove-paste {
             cursor: pointer;
             color: #f87171;
             font-weight: bold;
             margin-left: 2px;
         }
-        .file-chip .remove-file:hover { color: #ef4444; }
+        .paste-chip .remove-paste:hover { color: #ef4444; }
 
         /* ── Upload button (paperclip) ── */
         .upload-icon-btn {
@@ -437,6 +514,9 @@
                         </div>
                     </div>
 
+                    <!-- ── Paste chip ── -->
+                    <div id="paste-chip-row"></div>
+
                     <!-- ── Attached files chips ── -->
                     <div id="attached-files"></div>
 
@@ -542,7 +622,7 @@
     </div>
 </div>
 
-<script src="/static/script.js?v=9"></script>
+<script src="/static/script.js?v=23"></script>
 
 <!-- Terminal Modal -->
 <div class="terminal-modal-overlay" id="terminal-modal">

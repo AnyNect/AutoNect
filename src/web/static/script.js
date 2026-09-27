@@ -440,7 +440,8 @@ document.addEventListener('DOMContentLoaded', () => {
 function autoResize(textarea) {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
-    sendBtn.disabled = !textarea.value.trim();
+    if (typeof updateSendBtnState === 'function') updateSendBtnState();
+    else sendBtn.disabled = !textarea.value.trim();
 }
 function autoResizeEdit(textarea) {
     textarea.style.height = 'auto';
@@ -482,10 +483,11 @@ function togglePauseQueue(event) {
 }
 
 function handleSend() {
-    const text = promptInput.value.trim();
+    const text = getEffectivePrompt().trim();
     if (!text) return;
     promptInput.value = '';
     promptInput.style.height = 'auto';
+    clearPasteChip();
     sendBtn.disabled = true;
 
     if (isProcessing || isPaused) {
@@ -1472,7 +1474,14 @@ function showAttachedFiles() {
     }
     container.style.display = 'flex';
     container.innerHTML = attachedFiles.map((file, index) =>
-        `<span class="file-chip">${escapeHtml(file.name)} (${(file.size / 1024).toFixed(1)} KB) <span class="remove-file" data-index="${index}">&times;</span></span>`
+        `<span class="file-chip">
+            <span class="file-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg></span>
+            <span class="file-meta">
+                <span class="file-name">${escapeHtml(file.name)}</span>
+                <span class="file-size">${(file.size / 1024).toFixed(1)} KB</span>
+            </span>
+            <span class="remove-file" data-index="${index}" title="Remove">&times;</span>
+        </span>`
     ).join('');
 
     container.querySelectorAll('.remove-file').forEach(el => {
@@ -1485,6 +1494,161 @@ function showAttachedFiles() {
                 if (fileInput) fileInput.value = '';
             }
         });
+    });
+}
+
+/* ── Paste chips (multi: each paste becomes its own chip) ── */
+const PASTE_CHIP_THRESHOLD = 2000;
+let pasteChips = [];  // [{id, text, charCount, expanded, anchor}]
+let pasteChipNextId = 1;
+
+function getEffectivePrompt() {
+    // Box value + every chip that is NOT currently spliced into the box
+    let result = promptInput.value;
+    for (const c of pasteChips) {
+        if (!c.expanded) {
+            result += (result ? '\n\n' : '') + c.text;
+        }
+    }
+    return result;
+}
+
+function updateSendBtnState() {
+    sendBtn.disabled = !getEffectivePrompt().trim();
+}
+
+function renderPasteChips() {
+    const row = document.getElementById('paste-chip-row');
+    if (!row) return;
+    if (pasteChips.length === 0) {
+        row.innerHTML = '';
+        row.style.display = 'none';
+        return;
+    }
+    row.style.display = 'flex';
+    row.innerHTML = pasteChips.map(c => {
+        const label = c.expanded ? 'Hide' : 'Show';
+        return '<span class="paste-chip">Pasted text &middot; ' +
+            c.charCount.toLocaleString() + ' chars ' +
+            '<span class="paste-toggle" data-chip-id="' + c.id + '">' + label + '</span>' +
+            '<span class="remove-paste" data-chip-id="' + c.id + '">&times;</span></span>';
+    }).join('');
+    row.querySelectorAll('.paste-toggle').forEach(el => {
+        el.onclick = function() { toggleChip(parseInt(this.dataset.chipId, 10)); };
+    });
+    row.querySelectorAll('.remove-paste').forEach(el => {
+        el.onclick = function() { removeChip(parseInt(this.dataset.chipId, 10)); };
+    });
+}
+
+function toggleChip(id) {
+    const ta = document.getElementById('prompt');
+    if (!ta) return;
+    const chip = pasteChips.find(c => c.id === id);
+    if (!chip) return;
+    if (chip.expanded) {
+        // Hide: cut its text out at the exact position it went in.
+        if (typeof chip.insertedAt === 'number') {
+            const s = chip.insertedAt;
+            const e = s + chip.text.length;
+            if (s >= 0 && e <= ta.value.length && ta.value.slice(s, e) === chip.text) {
+                ta.value = ta.value.slice(0, s) + ta.value.slice(e);
+            } else {
+                // Position drifted (should not happen, input clears chips)
+                const idx = ta.value.indexOf(chip.text);
+                if (idx !== -1) ta.value = ta.value.slice(0, idx) + ta.value.slice(idx + chip.text.length);
+            }
+        }
+        chip.expanded = false;
+        chip.insertedAt = null;
+    } else {
+        // Show: splice its text at the anchor captured at paste time (clamped)
+        let pos = (typeof chip.anchor === 'number') ? chip.anchor : ta.value.length;
+        if (pos > ta.value.length) pos = ta.value.length;
+        if (pos < 0) pos = 0;
+        ta.value = ta.value.slice(0, pos) + chip.text + ta.value.slice(pos);
+        chip.expanded = true;
+        chip.insertedAt = pos;
+        ta.focus();
+        try { ta.setSelectionRange(pos + chip.text.length, pos + chip.text.length); } catch (e) {}
+        if (typeof autoResize === 'function') autoResize(ta);
+    }
+    updateSendBtnState();
+    renderPasteChips();
+}
+
+function removeChip(id) {
+    const ta = document.getElementById('prompt');
+    const chip = pasteChips.find(c => c.id === id);
+    if (!chip) return;
+    if (chip.expanded && ta && typeof chip.insertedAt === 'number') {
+        const s = chip.insertedAt;
+        const e = s + chip.text.length;
+        if (s >= 0 && e <= ta.value.length && ta.value.slice(s, e) === chip.text) {
+            ta.value = ta.value.slice(0, s) + ta.value.slice(e);
+        }
+    }
+    pasteChips = pasteChips.filter(c => c.id !== id);
+    updateSendBtnState();
+    renderPasteChips();
+}
+
+function clearPasteChips() {
+    const ta = document.getElementById('prompt');
+    if (ta) {
+        // Remove expanded chips from highest position to lowest so earlier
+        // offsets stay valid.
+        const expanded = pasteChips
+            .filter(c => c.expanded && typeof c.insertedAt === 'number')
+            .sort((a, b) => b.insertedAt - a.insertedAt);
+        for (const c of expanded) {
+            const s = c.insertedAt;
+            const e = s + c.text.length;
+            if (s >= 0 && e <= ta.value.length && ta.value.slice(s, e) === c.text) {
+                ta.value = ta.value.slice(0, s) + ta.value.slice(e);
+            }
+        }
+        ta.style.maxHeight = '';
+        ta.style.overflowY = '';
+    }
+    pasteChips = [];
+    updateSendBtnState();
+    renderPasteChips();
+}
+// Backward-compat alias for handleSend
+function clearPasteChip() { clearPasteChips(); }
+
+if (promptInput) {
+    promptInput.addEventListener('input', function() {
+        // Edits invalidate stored positions. Drop any chip whose text was
+        // spliced into the box (it is now literal content); keep the rest.
+        const hadExpanded = pasteChips.some(c => c.expanded);
+        if (hadExpanded) {
+            pasteChips = pasteChips.filter(c => !c.expanded);
+            renderPasteChips();
+            updateSendBtnState();
+        }
+    });
+
+    promptInput.addEventListener('paste', function(e) {
+        const cd = e.clipboardData;
+        if (!cd) return;
+        const pasted = cd.getData('text/plain') || '';
+        if (pasted.length < PASTE_CHIP_THRESHOLD) return;
+        e.preventDefault();
+        const pos = promptInput.selectionStart != null
+            ? promptInput.selectionStart
+            : promptInput.value.length;
+        pasteChips.push({
+            id: pasteChipNextId++,
+            text: pasted,
+            charCount: pasted.length,
+            expanded: false,
+            insertedAt: null,
+            anchor: pos
+        });
+        updateSendBtnState();
+        renderPasteChips();
     });
 }
 
