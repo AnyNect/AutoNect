@@ -136,7 +136,7 @@ except FileNotFoundError:
 MAX_WEBSOCKET_OUTPUT_BYTES = config.get("websocket", "max_output_bytes", default=150_000)
 TERMINAL_COMMAND_TEMPLATE = config.get("terminal", "command", default=["konsole", "-e", "bash", "-c", "{command}; exec bash"])
 FALLBACK_TERMINALS = config.get("terminal", "fallback_terminals", default=["gnome-terminal", "xterm"])
-OUTPUT_FILE_THRESHOLD = 10 * 1024  # 10 KB
+OUTPUT_FILE_THRESHOLD = 7 * 1024  # 7 KB
 
 # ── Output cache ──
 _output_cache = {}  # key: output_id, value: stdout string
