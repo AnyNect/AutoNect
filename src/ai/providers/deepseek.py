@@ -54,6 +54,8 @@ class DeepSeekProvider(AIProvider):
         self.observer = DOMObserver(self.page)
         self.observer.start()
 
+        self._click_retry_loading()
+
         logger.info("DeepSeek connected successfully")
 
     def _ensure_page(self):
@@ -199,6 +201,39 @@ class DeepSeekProvider(AIProvider):
         button.wait_for(timeout=5000)
         button.click()
         logger.info("Send button clicked")
+
+    def _click_retry_loading(self, attempts=5, delay=1.0):
+        """Click DeepSeek's 'retry loading' button if it is showing.
+
+        DeepSeek occasionally lands on a <span class="ds-button__content">
+        retry loading</span> button when the SPA fails to finish loading.
+        Check for it on every connect and click it so the user never has to.
+        """
+        js = """
+            () => {
+                const spans = document.querySelectorAll('span.ds-button__content');
+                for (const s of spans) {
+                    if (s.textContent.trim().toLowerCase() === 'retry loading') {
+                        const target = s.closest('div[role="button"], button') || s;
+                        target.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """
+        for i in range(1, attempts + 1):
+            try:
+                clicked = self._safe_evaluate(js)
+            except Exception as e:
+                logger.warning("retry-loading check failed (attempt %d): %s", i, e)
+                clicked = False
+            if clicked:
+                logger.info("Clicked 'retry loading' button (attempt %d)", i)
+                return True
+            time.sleep(delay)
+        logger.debug("No 'retry loading' button found")
+        return False
 
     def _inject_retry_observer(self):
         retry_selector = self.selectors["retry_button"]

@@ -415,6 +415,20 @@ function toggleSidebar(forceState) {
     }
 }
 
+async function restoreLastChat() {
+    try {
+        const res = await fetch('/api/current-chat');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.chat_id && data.chat_id !== currentChatId) {
+            logger.info('Auto-opening last chat', data.chat_id);
+            await loadChat(data.chat_id);
+        }
+    } catch (e) {
+        logger.error('restoreLastChat failed', e);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const saved = localStorage.getItem('sidebarOpen');
     if (saved !== null) {
@@ -430,7 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sidebar.classList.add('sidebar-closed');
         if (window.innerWidth <= 768) sidebar.classList.remove('sidebar-open');
     }
-    loadChatList();
+    loadChatList().then(restoreLastChat);
     loadSupportedExtensions();
 });
 

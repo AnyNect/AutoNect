@@ -111,6 +111,7 @@ _PLACEHOLDER_TITLES = {
 }
 
 BASE_DIR = Path(__file__).parent
+LAST_URL_FILE = Path("data/last_url.json")
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
@@ -223,6 +224,48 @@ def _on_dom_event(event):
         t.start()
 
 
+def _save_last_url():
+    """Persist the browser's current URL so a restart can return to it."""
+    try:
+        if provider and getattr(provider, "page", None):
+            url = provider.page.url
+            if url and url != "about:blank":
+                LAST_URL_FILE.parent.mkdir(parents=True, exist_ok=True)
+                LAST_URL_FILE.write_text(json.dumps({"url": url}))
+    except Exception as e:
+        logger.debug("save last url failed: %s", e)
+
+
+def _restore_last_url():
+    """Navigate back to the URL saved before the last shutdown.
+
+    Only restores a URL belonging to the provider's own site, so a
+    stale DeepSeek URL is never opened after a future provider change.
+    """
+    try:
+        if not LAST_URL_FILE.exists():
+            return
+        saved = json.loads(LAST_URL_FILE.read_text()).get("url")
+        if not saved or not provider or not getattr(provider, "page", None):
+            return
+        base_host = provider.base_url.split("//")[-1].split("/")[0]
+        if base_host and base_host in saved and saved != provider.page.url:
+            logger.info("Restoring last URL: %s", saved)
+            provider.page.goto(saved, timeout=30000)
+            try:
+                provider.page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            global _current_chat_id
+            frag = saved.rsplit("/", 1)[-1].split("?")[0]
+            matched = get_chat_by_url(frag) if frag else None
+            if matched:
+                _current_chat_id = matched["id"]
+                logger.info("Restored chat id: %s", _current_chat_id)
+    except Exception as e:
+        logger.warning("restore last url failed (ignored): %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global provider
@@ -232,6 +275,7 @@ async def lifespan(app: FastAPI):
     try:
         await loop.run_in_executor(_provider_executor, provider.connect)
         logger.info("DeepSeek provider connected")
+        await loop.run_in_executor(_provider_executor, _restore_last_url)
         if provider.observer:
             provider.observer.subscribe(_on_dom_event)
             logger.info("Subscribed to DOM observer for title sync")
@@ -248,6 +292,7 @@ async def lifespan(app: FastAPI):
         raise
     yield
     logger.info("Shutting down application lifespan")
+    await loop.run_in_executor(_provider_executor, _save_last_url)
     await loop.run_in_executor(_provider_executor, provider.close)
     _provider_executor.shutdown(wait=False)
     logger.info("Cleanup completed")
@@ -396,7 +441,14 @@ def clean_deepseek_markdown(text: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def index():
     logger.info("Serving index page")
-    return HTMLResponse(content=INDEX_HTML)
+    return HTMLResponse(
+        content=INDEX_HTML,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -465,7 +517,16 @@ async def chat(request: ChatRequest):
         global _current_chat_id
         _current_chat_id = request.session_id
 
-        deepseek_url = provider.page.url if provider.page else None
+        def _grab_url():
+            try:
+                if provider and getattr(provider, "page", None):
+                    return provider.page.url
+            except Exception:
+                pass
+            return None
+
+        deepseek_url = await loop.run_in_executor(_provider_executor, _grab_url)
+        await loop.run_in_executor(_provider_executor, _save_last_url)
         chat_name = request.prompt[:50] if is_new_chat else None
         upsert_chat(request.session_id, deepseek_url, chat_name)
 
@@ -650,6 +711,22 @@ async def list_chats():
     return JSONResponse(content=chats)
 
 
+@app.get("/api/current-chat")
+async def current_chat():
+    """Chat id matching the browser's current URL, for auto-open on load."""
+    chat_id = _current_chat_id
+    try:
+        if provider and getattr(provider, "page", None):
+            url = provider.page.url or ""
+            frag = url.rsplit("/", 1)[-1].split("?")[0]
+            matched = get_chat_by_url(frag) if frag and frag != "about:blank" else None
+            if matched:
+                chat_id = matched["id"]
+    except Exception as e:
+        logger.debug("current-chat lookup failed: %s", e)
+    return JSONResponse(content={"chat_id": chat_id})
+
+
 @app.get("/api/chats/{chat_id}")
 async def get_chat_history(chat_id: str):
     chat = get_chat(chat_id)
@@ -706,6 +783,7 @@ async def navigate_browser(request: NavigateRequest):
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(_provider_executor, _navigate)
+        await loop.run_in_executor(_provider_executor, _save_last_url)
         return JSONResponse(content={"status": "success", "url": url})
     except Exception as e:
         logger.exception("Navigation error")
