@@ -267,10 +267,55 @@ def _restore_last_url():
 
 
 @asynccontextmanager
+def _stt_port_listening(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _maybe_start_stt():
+    """Start the local STT service (:6012) if it is not already running.
+
+    Best-effort: the mic dictation button needs it, but AutoNect must
+    start regardless.  Finds stt-service/ at the project root and runs
+    it with its own venv.  If another AutoNect instance already started
+    one, the port is busy and we skip.
+    """
+    port = int(os.environ.get("AUTONECT_STT_PORT", "6012"))
+    if _stt_port_listening(port):
+        logger.info("STT service already listening on :%d", port)
+        return
+    project_root = BASE_DIR.parent.parent
+    stt_dir = project_root / "stt-service"
+    py = stt_dir / ".venv" / "bin" / "python"
+    if not py.exists():
+        logger.warning("STT service not found at %s; mic dictation disabled", stt_dir)
+        return
+    try:
+        subprocess.Popen(
+            [str(py), "-m", "uvicorn", "server:app",
+             "--host", "127.0.0.1", "--port", str(port)],
+            cwd=str(stt_dir),
+            stdout=open("/tmp/stt-6012.log", "a"),
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("Started STT service on :%d (from %s)", port, stt_dir)
+    except Exception:
+        logger.exception("Failed to start STT service")
+
+
 async def lifespan(app: FastAPI):
     global provider
     logger.info("Starting application lifespan")
     loop = asyncio.get_running_loop()
+    # Best-effort: bring up the local STT service so the mic works.
+    try:
+        _maybe_start_stt()
+    except Exception:
+        logger.exception("STT auto-start failed (non-fatal)")
     provider = DeepSeekProvider()
     try:
         await loop.run_in_executor(_provider_executor, provider.connect)
