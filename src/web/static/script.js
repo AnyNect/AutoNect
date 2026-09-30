@@ -923,58 +923,110 @@ function toggleAutoAllow() {
     logger.info('Auto-Allow toggled', { enabled: autoAllowEnabled });
 }
 
-/* ── Microphone dictation (Web Speech API) ── */
-let _dictRec = null;
+/* ── Microphone dictation via the local Parakeet STT service ──
+   Streams 16 kHz float32 PCM to ws://<host>:6012/ws/stt and writes
+   the transcript into the prompt.  Partial results show live; final
+   results commit on the service's silence endpoint. */
+let _dictWS = null;
+let _dictCtx = null;
+let _dictStream = null;
+let _dictNode = null;
+let _dictSrc = null;
 let _dictListening = false;
-let _dictBase = '';
+let _dictCommitted = '';   // text locked in by past finals (+ pre-existing input)
+
+const STT_PORT = 6012;
+
+function _dictRender(live) {
+    const base = _dictCommitted.replace(/\s+$/, '');
+    promptInput.value = base + (live ? (base ? ' ' : '') + live : '');
+    autoResize(promptInput);
+}
+
+function _dictCleanup() {
+    try { if (_dictNode) _dictNode.disconnect(); } catch (e) {}
+    try { if (_dictSrc) _dictSrc.disconnect(); } catch (e) {}
+    try { if (_dictStream) _dictStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    try { if (_dictCtx) _dictCtx.close(); } catch (e) {}
+    if (_dictWS) { try { _dictWS.close(); } catch (e) {} }
+    _dictNode = _dictSrc = _dictStream = _dictCtx = _dictWS = null;
+}
+
 function toggleDictation() {
     const btn = document.getElementById('mic-btn');
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-        logger.warn('Speech recognition unsupported in this browser');
-        if (btn) btn.title = 'Speech recognition not supported in this browser';
+    if (_dictListening) {
+        _dictListening = false;
+        if (btn) btn.classList.remove('listening');
+        _dictCleanup();
+        logger.info('Dictation stopped');
         return;
     }
-    if (_dictListening && _dictRec) {
-        try { _dictRec.stop(); } catch (e) {}
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        logger.warn('Microphone API unavailable');
         return;
     }
-    _dictRec = new SR();
-    _dictRec.lang = 'en-GB';
-    _dictRec.interimResults = true;
-    _dictRec.continuous = true;
-    _dictBase = promptInput.value.replace(/\s+$/, '');
-    _dictRec.onresult = (e) => {
-        let interim = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-            const r = e.results[i];
-            if (r.isFinal) {
-                const t = r[0].transcript.trim();
-                if (t) _dictBase = (_dictBase ? _dictBase + ' ' : '') + t;
-            } else {
-                interim += r[0].transcript;
+    navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+    }).then(async (stream) => {
+        _dictStream = stream;
+        const host = window.location.hostname || '127.0.0.1';
+        _dictCommitted = promptInput.value.replace(/\s+$/, '');
+
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        _dictCtx = new Ctx();
+        // A context created outside a direct gesture can start suspended;
+        // resume it or the ScriptProcessor never fires.
+        try { await _dictCtx.resume(); } catch (e) {}
+        const sr = _dictCtx.sampleRate;
+        const ws = new WebSocket(`ws://${host}:${STT_PORT}/ws/stt?sr=${sr}`);
+        _dictWS = ws;
+        ws.binaryType = 'arraybuffer';
+        ws.onopen = () => {
+            _dictSrc = _dictCtx.createMediaStreamSource(stream);
+            _dictNode = _dictCtx.createScriptProcessor(2048, 1, 1);
+            let _sentFrames = 0;
+            _dictNode.onaudioprocess = (e) => {
+                if (!_dictListening || ws.readyState !== WebSocket.OPEN) return;
+                const f = e.inputBuffer.getChannelData(0);
+                ws.send(new Float32Array(f).buffer);
+                if ((++_sentFrames % 20) === 1) {
+                    let peak = 0;
+                    for (let i = 0; i < f.length; i += 16) peak = Math.max(peak, Math.abs(f[i]));
+                    logger.info('dict frame', { frames: _sentFrames, peak: peak.toFixed(4), sr });
+                }
+            };
+            const sink = _dictCtx.createGain();
+            sink.gain.value = 0;                 // silent: no mic feedback
+            _dictSrc.connect(_dictNode);
+            _dictNode.connect(sink);
+            sink.connect(_dictCtx.destination);
+            _dictListening = true;
+            if (btn) btn.classList.add('listening');
+            logger.info('Dictation started');
+        };
+
+        ws.onmessage = (ev) => {
+            let m;
+            try { m = JSON.parse(ev.data); } catch (e) { return; }
+            if (m.type === 'partial') {
+                _dictRender(m.text || '');
+            } else if (m.type === 'final') {
+                if (m.text) {
+                    _dictCommitted = (_dictCommitted ? _dictCommitted + ' ' : '') + m.text;
+                }
+                _dictRender('');
+            } else if (m.type === 'error') {
+                logger.warn('STT error', { message: m.message });
             }
-        }
-        promptInput.value = _dictBase + (interim ? (_dictBase ? ' ' : '') + interim : '');
-        autoResize(promptInput);
-    };
-    _dictRec.onend = () => {
-        _dictListening = false;
-        if (btn) btn.classList.remove('listening');
-    };
-    _dictRec.onerror = (e) => {
-        logger.warn('Dictation error', { error: e && e.error });
-        _dictListening = false;
-        if (btn) btn.classList.remove('listening');
-    };
-    try {
-        _dictRec.start();
-        _dictListening = true;
-        if (btn) btn.classList.add('listening');
-        logger.info('Dictation started');
-    } catch (err) {
-        logger.warn('Dictation start failed', { err: String(err) });
-    }
+        };
+        ws.onerror = () => logger.warn('STT websocket error');
+        ws.onclose = () => {
+            _dictListening = false;
+            if (btn) btn.classList.remove('listening');
+        };
+    }).catch((err) => {
+        logger.warn('Microphone permission failed', { err: String(err) });
+    });
 }
 
 function createCommandSection(commands, group = null) {

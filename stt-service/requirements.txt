@@ -1,0 +1,6 @@
+onnx-asr[cpu,hub]
+fastapi
+uvicorn[standard]
+numpy
+soundfile
+scipy
