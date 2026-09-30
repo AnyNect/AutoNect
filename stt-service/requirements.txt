@@ -4,3 +4,5 @@ uvicorn[standard]
 numpy
 soundfile
 scipy
+rapidfuzz
+jellyfish

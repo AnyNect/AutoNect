@@ -16,6 +16,7 @@ import os, json, time, asyncio, logging
 import numpy as np
 import onnx_asr
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import vocab
 from scipy.signal import resample_poly
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -49,11 +50,18 @@ def _load():
     log.info("Model ready in %.1fs", time.time() - t)
 
 
+@app.post("/reload-vocab")
+def reload_vocab():
+    n = vocab.reload_vocab()
+    log.info("Reloaded dictionary: %d aliases", n)
+    return {"aliases": n}
+
+
 def _decode(a: np.ndarray) -> str:
     if len(a) < int(MIN_UTTER_S * SR):
         return ""
     txt = model.recognize(a, sample_rate=SR)
-    return (txt or "").strip()
+    return vocab.correct((txt or "").strip())
 
 
 @app.websocket("/ws/stt")

@@ -508,6 +508,14 @@ function handleSend() {
     promptInput.style.height = 'auto';
     clearPasteChip();
     sendBtn.disabled = true;
+    // If dictation is on, drop its committed baseline too, otherwise
+    // the next partial/final re-renders the just-sent text back in.
+    // Also reset the STT buffer so audio from before the send does not
+    // finalize into the now-empty box.
+    _dictCommitted = '';
+    if (_dictWS && _dictWS.readyState === WebSocket.OPEN) {
+        try { _dictWS.send('reset'); } catch (e) {}
+    }
 
     if (isProcessing || isPaused) {
         logger.info('Queuing prompt (app busy)', { prompt: text.substring(0, 50) });

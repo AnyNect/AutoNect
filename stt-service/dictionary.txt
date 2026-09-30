@@ -1,0 +1,18 @@
+# AutoNect custom dictionary.
+# One entry per line:  Canonical | alias1, alias2, alias3
+# Lines starting with # are ignored.  The corrector matches a sliding
+# window of 1-4 heard words against every alias (fuzzy + phonetic) and
+# rewrites a confident match to the Canonical spelling.
+# Edit freely, then POST /reload-vocab (no restart needed).
+
+AutoNect | autonect, auto nect, auto-net, auto net, automect, ottonect, auto next, out of nect
+DeepSeek | deep seek, deepseek, deep sick, deep sec
+Parakeet | parakeet, para keet, para kit, parakeat
+Raji | raji, rajee, rajji, radji
+Quran | quran, koran, quraan, qur'an
+mushaf | mushaf, mus haf, mush haf
+mutashabihat | mutashabihat, mutashabihaat, mutasha bihat, mutashabihat
+hifz | hifz, hifdh, hifz
+tajweed | tajweed, tajwid, tajweed
+Thorium | thorium, thoreum, thori um
+ONNX | onnx, onyx, on nex
