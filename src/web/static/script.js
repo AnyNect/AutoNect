@@ -462,14 +462,20 @@ function autoResizeEdit(textarea) {
     textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
 }
 function handleKeyDown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        // Empty input + Enter toggles Auto-Allow instead of sending.
-        if (!getEffectivePrompt().trim()) {
-            toggleAutoAllow();
-        } else {
-            handleSend();
-        }
+    if (event.key !== 'Enter') return;
+    // On touch devices (phone/tablet) Enter inserts a newline; send is
+    // the Send button.  There is no Shift key, so the desktop
+    // Enter=send / Shift+Enter=newline split cannot apply.
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
+        return;
+    }
+    if (event.shiftKey) return;   // desktop: Shift+Enter = newline
+    event.preventDefault();
+    // Empty input + Enter toggles Auto-Allow instead of sending.
+    if (!getEffectivePrompt().trim()) {
+        toggleAutoAllow();
+    } else {
+        handleSend();
     }
 }
 function scrollToBottom() {
@@ -979,7 +985,6 @@ function toggleDictation() {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
     }).then(async (stream) => {
         _dictStream = stream;
-        const host = window.location.hostname || '127.0.0.1';
         _dictCommitted = promptInput.value.replace(/\s+$/, '');
 
         const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -988,7 +993,11 @@ function toggleDictation() {
         // resume it or the ScriptProcessor never fires.
         try { await _dictCtx.resume(); } catch (e) {}
         const sr = _dictCtx.sampleRate;
-        const ws = new WebSocket(`ws://${host}:${STT_PORT}/ws/stt?sr=${sr}`);
+        // Same-origin path; AutoNect proxies /ws/stt to the local STT
+        // service.  Works over HTTPS and from the phone (no separate port,
+        // no mixed content).
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${proto}//${window.location.host}/ws/stt?sr=${sr}`);
         _dictWS = ws;
         ws.binaryType = 'arraybuffer';
         ws.onopen = () => {

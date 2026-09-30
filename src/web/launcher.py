@@ -51,15 +51,22 @@ def cmd_start(args):
     os.environ["AUTONECT_HOST"] = str(host)
     os.environ["AUTONECT_PORT"] = str(port)
 
+    ssl_cert = getattr(args, "ssl_certfile", None) or os.environ.get("AUTONECT_SSL_CERT")
+    ssl_key = getattr(args, "ssl_keyfile", None) or os.environ.get("AUTONECT_SSL_KEY")
+
     import uvicorn
-    print(f"🚀 Starting AnyNect on http://{host}:{port}")
-    uvicorn.run(
-        "src.web.server:app",
+    scheme = "https" if ssl_cert else "http"
+    print(f"🚀 Starting AnyNect on {scheme}://{host}:{port}")
+    kwargs = dict(
         host=host,
         port=port,
         reload=bool(reload),
         log_level="info",
     )
+    if ssl_cert and ssl_key:
+        kwargs["ssl_certfile"] = ssl_cert
+        kwargs["ssl_keyfile"] = ssl_key
+    uvicorn.run("src.web.server:app", **kwargs)
     return 0
 
 
@@ -106,6 +113,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     p_start = sub.add_parser("start", help="Start the AnyNect web server (default)")
+    p_start.add_argument("--ssl-certfile", default=None, help="TLS certificate (enables HTTPS)")
+    p_start.add_argument("--ssl-keyfile", default=None, help="TLS private key (enables HTTPS)")
     p_start.add_argument("--host", default=None, help="Bind host (default: from config)")
     p_start.add_argument("--port", type=int, default=None, help="Bind port (default: from config)")
     p_start.add_argument("--reload", dest="reload", action="store_true", default=None,

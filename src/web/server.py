@@ -1276,3 +1276,60 @@ async def websocket_execute(websocket: WebSocket):
         os.close(master_fd)
     except OSError as e:
         logger.error("Error closing master fd: %s", e)
+
+
+# =============================================================================
+# STT proxy — expose the local STT service on AutoNect's own origin
+# =============================================================================
+# The STT service binds 127.0.0.1:6012, so a phone hitting AutoNect over
+# LAN cannot reach it, and a plain-HTTP page cannot open a mic at all
+# (secure-context rule).  Proxying /ws/stt through AutoNect means the
+# browser talks to the SAME origin it loaded from -- works over HTTPS,
+# no extra port, no UFW rule, no mixed content.
+STT_UPSTREAM = os.environ.get("AUTONECT_STT_UPSTREAM", "ws://127.0.0.1:6012/ws/stt")
+
+
+@app.websocket("/ws/stt")
+async def websocket_stt_proxy(client_ws: WebSocket):
+    import websockets
+    await client_ws.accept()
+    query = client_ws.url.query
+    upstream_url = STT_UPSTREAM + (("?" + query) if query else "")
+    try:
+        async with websockets.connect(upstream_url, max_size=None) as up:
+            async def client_to_up():
+                try:
+                    while True:
+                        msg = await client_ws.receive()
+                        if msg.get("type") == "websocket.disconnect":
+                            break
+                        if msg.get("bytes") is not None:
+                            await up.send(msg["bytes"])
+                        elif msg.get("text") is not None:
+                            await up.send(msg["text"])
+                except (WebSocketDisconnect, RuntimeError):
+                    pass
+                finally:
+                    try:
+                        await up.close()
+                    except Exception:
+                        pass
+
+            async def up_to_client():
+                try:
+                    async for message in up:
+                        if isinstance(message, (bytes, bytearray)):
+                            await client_ws.send_bytes(bytes(message))
+                        else:
+                            await client_ws.send_text(message)
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_up(), up_to_client())
+    except Exception as e:
+        logger.warning("STT proxy failed: %s", e)
+    finally:
+        try:
+            await client_ws.close()
+        except Exception:
+            pass
