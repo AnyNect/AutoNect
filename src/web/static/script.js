@@ -292,6 +292,58 @@ async function loadChat(chatId) {
     }
 }
 
+async function loadContextChat() {
+    // Start a fresh chat and send User/FOR_AI.md as the first message.
+    // The server prepends src/prompts/system.txt on new sessions, so
+    // this reproduces the manual "paste FOR_AI.md" flow in one click.
+    const btn = document.getElementById('loadContextBtn');
+    if (btn) { btn.disabled = true; }
+    try {
+        logger.info('Load Context: fetching FOR_AI.md');
+        const resp = await fetch('/api/context/for-ai');
+        if (!resp.ok) throw new Error('Server returned ' + resp.status);
+        const data = await resp.json();
+        if (!data.content || !data.content.trim()) {
+            throw new Error('FOR_AI.md is empty');
+        }
+
+        // Reset to a fresh chat view.
+        currentChatId = null;
+        chatArea.innerHTML = '';
+        const welcomeDiv = document.createElement('div');
+        welcomeDiv.className = 'message-row assistant';
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        contentDiv.innerHTML = '<div class="bubble" style="color: var(--text-muted); text-align: center; padding: 30px 20px; opacity: 0.6;">Loading context (FOR_AI.md)...</div>';
+        welcomeDiv.appendChild(contentDiv);
+        chatArea.appendChild(welcomeDiv);
+
+        // Navigate DeepSeek to a fresh chat, then send the context file.
+        await fetch('/api/browser/navigate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: 'https://chat.deepseek.com/' })
+        });
+        renderChatList();
+        toggleSidebar(false);
+        logger.info('Load Context: sending FOR_AI.md', { bytes: data.content.length });
+        executeTask(data.content);
+    } catch (error) {
+        logger.error('Load Context failed', error);
+        removeLoading();
+        const errDiv = document.createElement('div');
+        errDiv.className = 'message-row assistant';
+        const errContent = document.createElement('div');
+        errContent.className = 'message-content';
+        errContent.innerHTML = '<div class="bubble" style="color: var(--accent-red); border: 1px solid var(--accent-red); padding: 10px 14px; border-radius: 12px;">Load Context failed: ' + error.message + '</div>';
+        errDiv.appendChild(errContent);
+        chatArea.appendChild(errDiv);
+        scrollToBottom();
+    } finally {
+        if (btn) { btn.disabled = false; }
+    }
+}
+
 async function newChat() {
     // Prevent spamming: if already in a new chat, do nothing
     if (currentChatId === null) {

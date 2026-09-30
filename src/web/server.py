@@ -772,6 +772,26 @@ async def current_chat():
     return JSONResponse(content={"chat_id": chat_id})
 
 
+CONTEXT_FILE_PATH = Path("User/FOR_AI.md")
+
+
+@app.get("/api/context/for-ai")
+async def get_for_ai_context():
+    """Return FOR_AI.md for the 'Load Context' button.
+
+    The button sends this as the first message of a fresh chat; the
+    server already prepends src/prompts/system.txt on new sessions, so
+    this reproduces the manual 'paste FOR_AI.md' flow in one click.
+    """
+    try:
+        content = CONTEXT_FILE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning("Context file not found at %s", CONTEXT_FILE_PATH)
+        return JSONResponse(status_code=404, content={"error": "FOR_AI.md not found"})
+    logger.info("Served context file (%d bytes)", len(content))
+    return JSONResponse(content={"content": content, "path": str(CONTEXT_FILE_PATH)})
+
+
 @app.get("/api/chats/{chat_id}")
 async def get_chat_history(chat_id: str):
     chat = get_chat(chat_id)
