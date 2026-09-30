@@ -514,7 +514,8 @@ function handleSend() {
     // finalize into the now-empty box.
     _dictCommitted = '';
     if (_dictWS && _dictWS.readyState === WebSocket.OPEN) {
-        try { _dictWS.send('reset'); } catch (e) {}
+        _dictAwaitingReset = true;
+        try { _dictWS.send('reset'); } catch (e) { _dictAwaitingReset = false; }
     }
 
     if (isProcessing || isPaused) {
@@ -942,6 +943,7 @@ let _dictNode = null;
 let _dictSrc = null;
 let _dictListening = false;
 let _dictCommitted = '';   // text locked in by past finals (+ pre-existing input)
+let _dictAwaitingReset = false;  // drop in-flight frames until reset-ack
 
 const STT_PORT = 6012;
 
@@ -1016,7 +1018,13 @@ function toggleDictation() {
         ws.onmessage = (ev) => {
             let m;
             try { m = JSON.parse(ev.data); } catch (e) { return; }
-            if (m.type === 'partial') {
+            if (m.type === 'reset-ack') {
+                // Everything before this was stale; safe to render again.
+                _dictAwaitingReset = false;
+            } else if (_dictAwaitingReset) {
+                // Drop in-flight partial/final frames from before the
+                // reset -- they would re-render the just-sent text.
+            } else if (m.type === 'partial') {
                 _dictRender(m.text || '');
             } else if (m.type === 'final') {
                 if (m.text) {

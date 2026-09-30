@@ -90,7 +90,10 @@ async def ws_stt(ws: WebSocket):
             if text == "reset":
                 buf = np.zeros(0, dtype=np.float32)
                 speech_started = False
-                await ws.send_json({"type": "final", "text": ""})
+                # Distinct ack so the client can drop every frame that
+                # was already in flight before this reset (WebSocket is
+                # ordered, so anything before the ack is stale).
+                await ws.send_json({"type": "reset-ack"})
                 continue
             if not data:
                 continue
