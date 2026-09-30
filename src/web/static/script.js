@@ -53,6 +53,10 @@ let taskQueue = [];
 /* ── Auto‑Allow command execution queue ── */
 let commandExecutionQueue = [];
 let isCommandExecuting = false;
+// Number of /api/ai-feedback requests in flight. Their replies can
+// spawn a NEW command group, so the queue must not drain while > 0
+// (issue #7).
+let pendingFeedback = 0;
 
 /* ── Chat rendering limits ── */
 // Most-recent messages rendered when a chat is opened. Older messages
@@ -576,7 +580,7 @@ function handleSend() {
         try { _dictWS.send('reset'); } catch (e) { _dictAwaitingReset = false; }
     }
 
-    if (isProcessing || isPaused) {
+    if (shouldQueueMessage()) {
         logger.info('Queuing prompt (app busy)', { prompt: text.substring(0, 50) });
         taskQueue.push(text);
         renderQueue();
@@ -681,6 +685,30 @@ async function sendToAI(promptText) {
     }
 }
 
+/* ── Command-work gate (issue #7) ──────────────────────────────
+   Queue-bypass bug: with Auto-Allow ON, a message queued while a
+   command group ran would fire the moment the last command's feedback
+   resolved -- even though the AI's reply to that feedback had just
+   spawned a NEW command group. The user message then raced the
+   auto-executed commands, producing interleaved command/feedback
+   loops. Fix: while Auto-Allow is ON and any command work is pending
+   (an unresolved group, a queued command, or a command executing), a
+   message must QUEUE rather than send. Auto-Allow OFF keeps the
+   direct path -- manual approval already paces the flow. */
+function hasPendingCommandWork() {
+    return !!(activeCommandGroup && !activeCommandGroup.resolved)
+        || commandExecutionQueue.length > 0
+        || isCommandExecuting
+        || pendingFeedback > 0;
+}
+
+function shouldQueueMessage() {
+    if (isPaused) return true;
+    if (isProcessing) return true;
+    if (autoAllowEnabled && hasPendingCommandWork()) return true;
+    return false;
+}
+
 function processNextQueueTask() {
     // Do not drain the queue if the app is still busy. This guards against
     // any handler that mistakenly calls us mid-flight.
@@ -689,6 +717,13 @@ function processNextQueueTask() {
         return;
     }
     if (isPaused) return;
+    // Do not drain into a fresh prompt while Auto-Allow still has
+    // command work pending -- the AI's feedback reply may have spawned
+    // a new command group that must finish first (issue #7).
+    if (autoAllowEnabled && hasPendingCommandWork()) {
+        logger.debug('processNextQueueTask deferred - command work pending');
+        return;
+    }
     if (taskQueue.length === 0) return;
 
     const nextPrompt = taskQueue.shift();
@@ -1261,6 +1296,7 @@ async function openNativeTerminal(command) {
 
 async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
     return (async () => {
+    pendingFeedback++;
     try {
         logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId });
         const fbResponse = await fetch('/api/ai-feedback', {
@@ -1277,11 +1313,14 @@ async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
         }
     } catch (fbError) {
         logger.error('Batch feedback failed', fbError);
+    } finally {
+        pendingFeedback = Math.max(0, pendingFeedback - 1);
     }
     })();
 }
 
 function handleDecline(card) {
+    let feedbackPromise = Promise.resolve();
     if (card._autoAllowTimer) {
         clearInterval(card._autoAllowTimer);
         if (card._autoAllowTimerEl) card._autoAllowTimerEl.remove();
@@ -1317,7 +1356,9 @@ function handleDecline(card) {
         if (group.completed === group.total && !group.resolved) {
             group.resolved = true;
             activeCommandGroup = null;
-            sendBatchFeedback(group.outputs, group.chat_id);
+            // Await the feedback: its reply may spawn a new command group,
+            // and draining the queue before it lands is the issue #7 race.
+            feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id);
             batchDone = true;
         }
     } else {
@@ -1325,12 +1366,13 @@ function handleDecline(card) {
     }
 
     // If this decline completed the whole batch, release the busy state
-    // and drain the queue. Previously this path left isProcessing = true
-    // forever, which silently disabled queue draining.
+    // only AFTER the feedback reply has landed (or been attempted).
     if (batchDone) {
-        isProcessing = false;
-        sendBtn.disabled = !promptInput.value.trim();
-        processNextQueueTask();
+        feedbackPromise.finally(() => {
+            isProcessing = false;
+            sendBtn.disabled = !promptInput.value.trim();
+            processNextQueueTask();
+        });
     }
 }
 
@@ -1525,6 +1567,7 @@ async function handleAllow(card, onComplete = null) {
 
         const sendSingleFeedback = async (cmd, out, code) => {
             return (async () => {
+            pendingFeedback++;
             try {
                 logger.debug('Sending single feedback', {
                     command: cmd.substring(0, 30),
@@ -1553,6 +1596,8 @@ async function handleAllow(card, onComplete = null) {
                 }
             } catch (fbError) {
                 logger.error('Single feedback failed', fbError);
+            } finally {
+                pendingFeedback = Math.max(0, pendingFeedback - 1);
             }
             })();
         };
