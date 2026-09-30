@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from playwright.sync_api import sync_playwright
 from patchright.sync_api import sync_playwright as patchright_playwright
@@ -95,9 +96,9 @@ class BrowserManager:
             self.playwright = sync_playwright().start()
 
             self.context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=config.get(
-                    "browser",
-                    "profile_path"
+                user_data_dir=(
+                    os.environ.get("AUTONECT_PROFILE")
+                    or config.get("browser", "profile_path")
                 ),
                 executable_path=config.get(
                     "browser",

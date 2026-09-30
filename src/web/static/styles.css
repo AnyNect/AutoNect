@@ -1541,3 +1541,50 @@ header {
     color: #f87171;
     font-weight: bold;
 }
+/* ── Microphone dictation button ── */
+#mic-btn {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--bg-input);
+    color: var(--text-muted);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, color 0.2s;
+    flex-shrink: 0;
+    padding: 0;
+}
+#mic-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+#mic-btn.listening {
+    background: rgba(237, 201, 106, 0.14);
+    color: #edc96a;
+}
+/* Ripple rings + glow while listening */
+#mic-btn.listening::before,
+#mic-btn.listening::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(237, 201, 106, 0.7);
+    animation: mic-ripple 1.8s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+    pointer-events: none;
+}
+#mic-btn.listening::after { animation-delay: 0.9s; }
+#mic-btn.listening svg {
+    animation: mic-bob 1s ease-in-out infinite;
+    transform-origin: center 60%;
+    filter: drop-shadow(0 0 6px rgba(237, 201, 106, 0.75));
+}
+@keyframes mic-ripple {
+    0%   { transform: scale(0.75); opacity: 0.85; }
+    100% { transform: scale(1.7);  opacity: 0; }
+}
+@keyframes mic-bob {
+    0%, 100% { transform: translateY(0)     scale(1); }
+    50%      { transform: translateY(-1.5px) scale(1.08); }
+}

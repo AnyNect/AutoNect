@@ -464,7 +464,12 @@ function autoResizeEdit(textarea) {
 function handleKeyDown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        handleSend();
+        // Empty input + Enter toggles Auto-Allow instead of sending.
+        if (!getEffectivePrompt().trim()) {
+            toggleAutoAllow();
+        } else {
+            handleSend();
+        }
     }
 }
 function scrollToBottom() {
@@ -916,6 +921,60 @@ function toggleAutoAllow() {
         btn.title = autoAllowEnabled ? 'Disable Auto-Allow' : 'Enable Auto-Allow';
     }
     logger.info('Auto-Allow toggled', { enabled: autoAllowEnabled });
+}
+
+/* ── Microphone dictation (Web Speech API) ── */
+let _dictRec = null;
+let _dictListening = false;
+let _dictBase = '';
+function toggleDictation() {
+    const btn = document.getElementById('mic-btn');
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+        logger.warn('Speech recognition unsupported in this browser');
+        if (btn) btn.title = 'Speech recognition not supported in this browser';
+        return;
+    }
+    if (_dictListening && _dictRec) {
+        try { _dictRec.stop(); } catch (e) {}
+        return;
+    }
+    _dictRec = new SR();
+    _dictRec.lang = 'en-GB';
+    _dictRec.interimResults = true;
+    _dictRec.continuous = true;
+    _dictBase = promptInput.value.replace(/\s+$/, '');
+    _dictRec.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+            const r = e.results[i];
+            if (r.isFinal) {
+                const t = r[0].transcript.trim();
+                if (t) _dictBase = (_dictBase ? _dictBase + ' ' : '') + t;
+            } else {
+                interim += r[0].transcript;
+            }
+        }
+        promptInput.value = _dictBase + (interim ? (_dictBase ? ' ' : '') + interim : '');
+        autoResize(promptInput);
+    };
+    _dictRec.onend = () => {
+        _dictListening = false;
+        if (btn) btn.classList.remove('listening');
+    };
+    _dictRec.onerror = (e) => {
+        logger.warn('Dictation error', { error: e && e.error });
+        _dictListening = false;
+        if (btn) btn.classList.remove('listening');
+    };
+    try {
+        _dictRec.start();
+        _dictListening = true;
+        if (btn) btn.classList.add('listening');
+        logger.info('Dictation started');
+    } catch (err) {
+        logger.warn('Dictation start failed', { err: String(err) });
+    }
 }
 
 function createCommandSection(commands, group = null) {
@@ -1835,6 +1894,11 @@ if (autoAllowBtn) {
     const onIcon = document.getElementById('auto-allow-on');
     if (offIcon) offIcon.style.display = 'block';
     if (onIcon) onIcon.style.display = 'none';
+}
+
+const micBtn = document.getElementById('mic-btn');
+if (micBtn) {
+    micBtn.addEventListener('click', toggleDictation);
 }
 
 promptInput.focus();
