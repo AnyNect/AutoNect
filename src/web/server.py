@@ -1417,7 +1417,6 @@ async def publish_restart_report(request: Request):
     return JSONResponse(content={"ok": True, "subscribers": len(_event_subscribers)})
 
 
-@app.websocket("/ws/stt")
 async def _connect_stt(upstream_url):
     """Connect to the STT upstream, starting the service if it is down.
 
@@ -1443,6 +1442,7 @@ async def _connect_stt(upstream_url):
     return await websockets.connect(upstream_url, max_size=None)
 
 
+@app.websocket("/ws/stt")
 async def websocket_stt_proxy(client_ws: WebSocket):
     import websockets
     await client_ws.accept()
