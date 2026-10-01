@@ -259,10 +259,26 @@ def _restore_last_url():
 
 @asynccontextmanager
 def _stt_port_listening(port: int) -> bool:
+    """True only if the STT app actually answers HTTP.
+
+    A bare TCP connect is not enough: a uvicorn shutting down keeps its
+    listening socket briefly, so connect_ex() succeeds against a dead
+    process and the caller skips starting a real one. An HTTP GET to the
+    root proves the ASGI app is serving (any status counts).
+    """
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.3)
-        return sock.connect_ex(("127.0.0.1", port)) == 0
+        if sock.connect_ex(("127.0.0.1", port)) != 0:
+            return False
+    try:
+        import urllib.request
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1.0)
+        return True
+    except urllib.error.HTTPError:
+        return True          # answered with an HTTP status -> app is up
+    except Exception:
+        return False          # connected but no HTTP -> not really up
 
 
 def _maybe_start_stt():
