@@ -237,33 +237,24 @@ def _save_last_url():
 
 
 def _restore_last_url():
-    """Navigate back to the URL saved before the last shutdown.
+    """Record the current chat id from the URL the browser is already on.
 
-    Only restores a URL belonging to the provider's own site, so a
-    stale DeepSeek URL is never opened after a future provider change.
+    Navigation to the last URL now happens inside provider.connect(), so
+    startup goes straight there (no base_url -> last-chat double load).
+    This only syncs in-memory state.
     """
     try:
-        if not LAST_URL_FILE.exists():
+        if not provider or not getattr(provider, "page", None):
             return
-        saved = json.loads(LAST_URL_FILE.read_text()).get("url")
-        if not saved or not provider or not getattr(provider, "page", None):
-            return
-        base_host = provider.base_url.split("//")[-1].split("/")[0]
-        if base_host and base_host in saved and saved != provider.page.url:
-            logger.info("Restoring last URL: %s", saved)
-            provider.page.goto(saved, timeout=30000)
-            try:
-                provider.page.wait_for_load_state("networkidle", timeout=8000)
-            except Exception:
-                pass
-            global _current_chat_id
-            frag = saved.rsplit("/", 1)[-1].split("?")[0]
-            matched = get_chat_by_url(frag) if frag else None
-            if matched:
-                _current_chat_id = matched["id"]
-                logger.info("Restored chat id: %s", _current_chat_id)
+        url = provider.page.url or ""
+        frag = url.rsplit("/", 1)[-1].split("?")[0]
+        global _current_chat_id
+        matched = get_chat_by_url(frag) if frag and frag != "about:blank" else None
+        if matched:
+            _current_chat_id = matched["id"]
+            logger.info("Restored chat id: %s", _current_chat_id)
     except Exception as e:
-        logger.warning("restore last url failed (ignored): %s", e)
+        logger.debug("restore last url failed (ignored): %s", e)
 
 
 @asynccontextmanager

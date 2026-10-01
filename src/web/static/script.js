@@ -1299,27 +1299,40 @@ async function openNativeTerminal(command) {
    POST with exponential backoff until the new server answers, so a
    self-restart survives end to end. */
 async function postWithRetry(url, body, maxWaitMs = 180000) {
+    // Retry on BOTH a thrown fetch error (server down) AND a 5xx
+    // response. After a restart the server boots before the DeepSeek
+    // browser reconnects, and answers 500 ("Provider not initialized")
+    // until it is ready -- a 5xx that clears on its own. Retrying it is
+    // what lets a self-restart's output reach the AI with no human step.
     const start = Date.now();
     let delay = 500;
     let attempt = 0;
     while (true) {
         attempt++;
+        let resp = null;
+        let err = null;
         try {
-            return await fetch(url, {
+            resp = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
-        } catch (err) {
-            const elapsed = Date.now() - start;
-            if (elapsed >= maxWaitMs) {
-                logger.error('POST ' + url + ' gave up after ' + elapsed + 'ms', err);
-                throw err;
-            }
-            logger.warn('POST ' + url + ' failed (server restarting?); retry ' + attempt + ' in ' + delay + 'ms');
-            await new Promise(r => setTimeout(r, delay));
-            delay = Math.min(delay * 2, 5000);
+        } catch (e) {
+            err = e;
         }
+        if (resp && resp.status < 500) {
+            return resp;   // success or a real 4xx: hand it back
+        }
+        const elapsed = Date.now() - start;
+        const why = err ? ('network error: ' + err) : ('HTTP ' + resp.status);
+        if (elapsed >= maxWaitMs) {
+            logger.error('POST ' + url + ' gave up after ' + elapsed + 'ms (' + why + ')');
+            if (err) throw err;
+            return resp;   // last 5xx: return so the caller logs it
+        }
+        logger.warn('POST ' + url + ' retryable (' + why + '); attempt ' + attempt + ' in ' + delay + 'ms');
+        await new Promise(r => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 5000);
     }
 }
 

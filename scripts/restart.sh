@@ -20,10 +20,10 @@ RESTART_LOG="${AUTONECT_RESTART_LOG:-/tmp/autonect-restart.log}"
 STATUS="${AUTONECT_STATUS:-/tmp/autonect-restart-status.txt}"
 BIN="$APPDIR/.venv/bin/AutoNect"
 
-SCHEME="http"; CERT_ARGS=""
+SCHEME="http"; CERT_ARGS=()
 if [ -f "$APPDIR/certs/autonect-cert.pem" ] && [ -f "$APPDIR/certs/autonect-key.pem" ]; then
     SCHEME="https"
-    CERT_ARGS="--ssl-certfile $APPDIR/certs/autonect-cert.pem --ssl-keyfile $APPDIR/certs/autonect-key.pem"
+    CERT_ARGS=(--ssl-certfile "$APPDIR/certs/autonect-cert.pem" --ssl-keyfile "$APPDIR/certs/autonect-key.pem")
 fi
 CURL="curl -sk -m 2"
 
@@ -61,10 +61,10 @@ sleep 1
 echo "Starting AutoNect..."
 cd "$APPDIR" || { echo "cd failed"; exit 1; }
 if [ -n "$PROFILE" ]; then
-    AUTONECT_PROFILE="$PROFILE" setsid $BIN start --host "$HOST" --port "$PORT" $CERT_ARGS \
+    AUTONECT_PROFILE="$PROFILE" setsid "$BIN" start --host "$HOST" --port "$PORT" "${CERT_ARGS[@]}" \
         > "$LOG" 2>&1 < /dev/null &
 else
-    setsid $BIN start --host "$HOST" --port "$PORT" $CERT_ARGS \
+    setsid "$BIN" start --host "$HOST" --port "$PORT" "${CERT_ARGS[@]}" \
         > "$LOG" 2>&1 < /dev/null &
 fi
 } >> "$RESTART_LOG" 2>&1

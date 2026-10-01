@@ -100,6 +100,54 @@ def test_gives_up_after_deadline(page):
     assert res["calls"] >= 2, res
 
 
+def test_retries_on_5xx_then_succeeds(page):
+    # The key fix: a just-booted server answers 500 ("Provider not
+    # initialized") until DeepSeek reconnects. postWithRetry must retry
+    # 5xx, not just thrown network errors.
+    res = page.evaluate(
+        """async () => {
+            const _orig = window.fetch;
+            let calls = 0;
+            window.fetch = async () => {
+                calls++;
+                if (calls < 3) {
+                    return new Response(JSON.stringify({error:'Provider not initialized'}),
+                        { status: 500, headers: {'Content-Type':'application/json'} });
+                }
+                return new Response(JSON.stringify({ok:true}),
+                    { status: 200, headers: {'Content-Type':'application/json'} });
+            };
+            try {
+                const r = await postWithRetry('/api/ai-feedback', {x:1}, 20000);
+                return { calls, status: r.status };
+            } finally { window.fetch = _orig; }
+        }"""
+    )
+    assert res["calls"] == 3, res
+    assert res["status"] == 200, res
+
+
+def test_4xx_not_retried(page):
+    # A real 4xx is returned immediately (no retry loop).
+    res = page.evaluate(
+        """async () => {
+            const _orig = window.fetch;
+            let calls = 0;
+            window.fetch = async () => {
+                calls++;
+                return new Response(JSON.stringify({error:'bad'}),
+                    { status: 400, headers: {'Content-Type':'application/json'} });
+            };
+            try {
+                const r = await postWithRetry('/api/ai-feedback', {x:1}, 20000);
+                return { calls, status: r.status };
+            } finally { window.fetch = _orig; }
+        }"""
+    )
+    assert res["calls"] == 1, res
+    assert res["status"] == 400, res
+
+
 def test_chat_uses_retry(page):
     # sendToAI should route /api/chat through postWithRetry (i.e. it
     # survives a transient outage).

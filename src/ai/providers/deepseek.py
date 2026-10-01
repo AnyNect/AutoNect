@@ -42,14 +42,39 @@ class DeepSeekProvider(AIProvider):
         self.response_timeout = config.get("ai", "response_timeout_ms", default=180000)
         self.selectors = SELECTORS
 
+    def _saved_url(self):
+        """URL saved before the last shutdown, if it belongs to this
+        provider's own site.  Lets startup go STRAIGHT to the last chat
+        instead of base_url -> last chat (two navigations)."""
+        try:
+            import json
+            from pathlib import Path
+            f = Path("data/last_url.json")
+            if not f.exists():
+                return None
+            saved = json.loads(f.read_text()).get("url")
+            if not saved:
+                return None
+            base_host = self.base_url.split("//")[-1].split("/")[0]
+            if base_host and base_host in saved:
+                return saved
+        except Exception as e:
+            logger.debug("saved-url lookup failed: %s", e)
+        return None
+
     def connect(self):
         logger.info("Connecting to DeepSeek...")
         self.page = self.browser.launch()
 
-        if self.base_url not in self.page.url:
-            logger.debug("Navigating to DeepSeek chat page")
-            self.page.goto(self.base_url)
-            self.page.wait_for_load_state("networkidle")
+        # Go directly to the last chat if we have one; else the base page.
+        target = self._saved_url() or self.base_url
+        if target not in self.page.url:
+            logger.info("Navigating to %s", target)
+            self.page.goto(target, timeout=30000)
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
 
         self.observer = DOMObserver(self.page)
         self.observer.start()
