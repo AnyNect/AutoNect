@@ -71,12 +71,16 @@ else
 fi
 } >> "$RESTART_LOG" 2>&1
 
-UP=0; WAITED=0
-for i in $(seq 1 60); do
-    WAITED=$i
-    if $CURL "$SCHEME://127.0.0.1:$PORT/" -o /dev/null 2>/dev/null; then UP=1; break; fi
-    sleep 1
-done
+# ── Event-driven readiness ──────────────────────────────────────
+# Block until the server logs "DeepSeek provider connected" (tail -F
+# waits on inotify internally; grep -m1 returns on the first match;
+# timeout 120 bounds the wait). No sleep-poll loop.
+UP=0
+if timeout 120 tail -n0 -F "$LOG" 2>/dev/null | grep -m1 -q "DeepSeek provider connected"; then
+    UP=1
+else
+    UP=0
+fi
 
 PID="$(lsof -t -i:$PORT 2>/dev/null | head -n1)"
 SERVED="$($CURL "$SCHEME://127.0.0.1:$PORT/" 2>/dev/null | grep -o 'script.js?v=[0-9]*' | head -1)"
@@ -84,7 +88,7 @@ GIT="$(git -C "$APPDIR" log --oneline -1 2>/dev/null)"
 
 {
 echo "=== AutoNect restart report $(date '+%F %T') ==="
-if [ "$UP" = 1 ]; then echo "RESULT: UP after ~${WAITED}s"; else echo "RESULT: FAILED - did not come up within 60s"; fi
+if [ "$UP" = 1 ]; then echo "RESULT: UP (event: DeepSeek connected)"; else echo "RESULT: FAILED - not ready within the wait window"; fi
 echo "PORT:   $PORT"
 echo "URL:    $SCHEME://127.0.0.1:$PORT"
 echo "PID:    ${PID:-none}"
@@ -93,5 +97,21 @@ echo "SERVED: ${SERVED:-unknown}"
 echo "--- last 20 lines of live log ---"
 tail -n 20 "$LOG" 2>/dev/null
 } | tee -a "$RESTART_LOG" > "$STATUS"
+
+# ── PUSH the report to the running server, which fans it out over
+#    /ws/events to any connected UI (event, not poll). Best-effort.
+if [ "$UP" = 1 ]; then
+    python3 - "$SCHEME://127.0.0.1:$PORT/api/restart-report/publish" "$STATUS" << 'PY' 2>/dev/null || true
+import json, ssl, sys, urllib.request
+url, path = sys.argv[1], sys.argv[2]
+try:
+    body = json.dumps({"content": open(path, encoding="utf-8").read()}).encode()
+    ctx = ssl._create_unverified_context()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, context=ctx, timeout=5)
+except Exception:
+    pass
+PY
+fi
 
 [ "$UP" = 1 ] && exit 0 || exit 1

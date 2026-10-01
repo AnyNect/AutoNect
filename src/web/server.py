@@ -312,6 +312,7 @@ async def lifespan(app: FastAPI):
         await loop.run_in_executor(_provider_executor, provider.connect)
         logger.info("DeepSeek provider connected")
         await loop.run_in_executor(_provider_executor, _restore_last_url)
+        _load_pending_restart_report()
         if provider.observer:
             provider.observer.subscribe(_on_dom_event)
             logger.info("Subscribed to DOM observer for title sync")
@@ -804,7 +805,9 @@ async def get_restart_report():
 
 @app.post("/api/restart-report/ack")
 async def ack_restart_report():
-    """Mark the restart report as consumed (delete it)."""
+    """Mark the restart report as consumed (clear memory + delete file)."""
+    global _pending_restart_report
+    _pending_restart_report = None
     f = Path(os.environ.get("AUTONECT_STATUS", "/tmp/autonect-restart-status.txt"))
     try:
         f.unlink()
@@ -1328,6 +1331,90 @@ async def websocket_execute(websocket: WebSocket):
 # browser talks to the SAME origin it loaded from -- works over HTTPS,
 # no extra port, no UFW rule, no mixed content.
 STT_UPSTREAM = os.environ.get("AUTONECT_STT_UPSTREAM", "ws://127.0.0.1:6012/ws/stt")
+
+
+# =============================================================================
+# Event bus — server pushes events to the UI (no polling)
+# =============================================================================
+# The UI holds a persistent /ws/events socket. The server pushes events
+# (e.g. a restart report) the moment they happen, so the frontend never
+# polls. A small pending buffer covers the window where the UI is
+# reconnecting right after a restart.
+_event_subscribers: set = set()
+_pending_restart_report: Optional[str] = None
+
+
+async def _broadcast_event(payload: dict):
+    dead = []
+    for ws in list(_event_subscribers):
+        try:
+            await ws.send_text(json.dumps(payload))
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _event_subscribers.discard(ws)
+
+
+def _load_pending_restart_report():
+    """On boot, hold any restart report the script already wrote."""
+    global _pending_restart_report
+    try:
+        f = Path(os.environ.get("AUTONECT_STATUS", "/tmp/autonect-restart-status.txt"))
+        if f.exists():
+            _pending_restart_report = f.read_text(encoding="utf-8")
+            logger.info("Loaded pending restart report (%d bytes)", len(_pending_restart_report))
+    except Exception as e:
+        logger.debug("pending restart report load failed: %s", e)
+
+
+@app.websocket("/ws/events")
+async def websocket_events(websocket: WebSocket):
+    """Persistent event channel. The server pushes; the client listens."""
+    await websocket.accept()
+    _event_subscribers.add(websocket)
+    logger.info("Event subscriber connected (%d total)", len(_event_subscribers))
+    try:
+        # Deliver anything already waiting (e.g. a report written while
+        # the UI was reconnecting).
+        if _pending_restart_report:
+            await websocket.send_text(json.dumps(
+                {"type": "restart-report", "content": _pending_restart_report}))
+        while True:
+            await websocket.receive_text()   # keep-alive / disconnect detect
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug("event socket closed: %s", e)
+    finally:
+        _event_subscribers.discard(websocket)
+        logger.info("Event subscriber disconnected (%d left)", len(_event_subscribers))
+
+
+@app.post("/api/restart-report/publish")
+async def publish_restart_report(request: Request):
+    """Called by scripts/restart.sh once the report is written.
+
+    Stores it and PUSHES it to every connected UI, so delivery is an
+    event, not a poll.
+    """
+    global _pending_restart_report
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    content = data.get("content")
+    if not content:
+        try:
+            f = Path(os.environ.get("AUTONECT_STATUS", "/tmp/autonect-restart-status.txt"))
+            content = f.read_text(encoding="utf-8") if f.exists() else None
+        except Exception:
+            content = None
+    if not content:
+        return JSONResponse(status_code=400, content={"error": "no report content"})
+    _pending_restart_report = content
+    await _broadcast_event({"type": "restart-report", "content": content})
+    logger.info("Published restart report to %d subscriber(s)", len(_event_subscribers))
+    return JSONResponse(content={"ok": True, "subscribers": len(_event_subscribers)})
 
 
 @app.websocket("/ws/stt")

@@ -1,9 +1,8 @@
-"""Test that a restart report is forwarded to the AI automatically.
+"""Test the event-driven restart-report path.
 
-scripts/restart.sh writes its report to $AUTONECT_STATUS. The server
-exposes it at GET /api/restart-report; the frontend's checkRestartReport()
-fetches it and feeds it to the AI via /api/ai-feedback, so a self-restart
-continues the loop with no human step.
+scripts/restart.sh POSTs the report to /api/restart-report/publish; the
+server fans it out over /ws/events to connected UIs. The frontend reacts
+by forwarding it to the AI (/api/ai-feedback).
 
     AUTONECT_TEST_URL=http://127.0.0.1:9000 .venv/bin/python -m pytest tests/test_restart_report.py -v
 """
@@ -15,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 URL = os.environ.get("AUTONECT_TEST_URL", "http://127.0.0.1:9000/")
+WS = URL.replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
 
 sync_playwright = None
 try:
@@ -37,75 +37,54 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_restart_report_endpoint_exists():
-    import json, urllib.request
-    with urllib.request.urlopen(URL.rstrip("/") + "/api/restart-report", timeout=5) as r:
-        d = json.loads(r.read().decode())
-    assert "content" in d  # may be null if no report pending
+def test_publish_endpoint_exists():
+    import urllib.request
+    # The publish endpoint must exist (not 404). A body-less publish may
+    # 200 (it falls back to the status file) or 400 (no report yet) --
+    # both prove the route is wired.
+    req = urllib.request.Request(URL.rstrip("/") + "/api/restart-report/publish",
+                                 data=b"{}", headers={"Content-Type": "application/json"})
+    try:
+        code = urllib.request.urlopen(req, timeout=5).status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    assert code in (200, 400), code
 
 
-def test_checkRestartReport_forwards_content():
+def test_ws_events_receives_pushed_report():
+    """A publish call must fan out to a connected /ws/events client."""
+    import json, threading, urllib.request
     with sync_playwright() as pw:
+        # Use Playwright's JS to open the event socket and publish, so the
+        # browser-side receive path is exercised too.
         b = pw.chromium.launch(headless=True)
         pg = b.new_page()
         pg.goto(URL, wait_until="domcontentloaded")
-        pg.wait_for_function("typeof checkRestartReport === 'function'", timeout=10000)
+        pg.wait_for_function("typeof connectEventSocket === 'function'", timeout=10000)
         res = pg.evaluate(
             """async () => {
-                const _orig = window.fetch;
-                let forwarded = null, acked = false;
-                window.fetch = async (url, opts) => {
-                    if (url.includes('/api/restart-report/ack')) { acked = true;
-                        return new Response('{"ok":true}', {status:200, headers:{'Content-Type':'application/json'}}); }
-                    if (url.includes('/api/restart-report')) {
-                        return new Response(JSON.stringify({content: 'RESULT: UP after ~10s', mtime: 1}),
-                            {status:200, headers:{'Content-Type':'application/json'}});
-                    }
-                    if (url.includes('/api/ai-feedback')) {
-                        forwarded = JSON.parse(opts.body);
-                        return new Response(JSON.stringify({answer:'ok', thinking:'', commands:[]}),
-                            {status:200, headers:{'Content-Type':'application/json'}});
-                    }
-                    return new Response('[]', {status:200, headers:{'Content-Type':'application/json'}});
-                };
-                try {
-                    await checkRestartReport();
-                    return { forwarded, acked };
-                } finally { window.fetch = _orig; }
+                return await new Promise((resolve) => {
+                    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
+                    const timer = setTimeout(() => resolve({timeout:true}), 8000);
+                    ws.onmessage = (ev) => {
+                        try {
+                            const m = JSON.parse(ev.data);
+                            if (m.type === 'restart-report') {
+                                clearTimeout(timer);
+                                resolve({got:true, len:(m.content||'').length});
+                            }
+                        } catch(e) {}
+                    };
+                    ws.onopen = () => {
+                        fetch('/api/restart-report/publish', {
+                            method:'POST', headers:{'Content-Type':'application/json'},
+                            body: JSON.stringify({content:'RESULT: UP (event: DeepSeek connected)'})
+                        });
+                    };
+                });
             }"""
         )
-        assert res["acked"] is True, res
-        assert res["forwarded"] is not None, res
-        assert "RESULT: UP" in res["forwarded"]["stdout"], res
-        b.close()
-
-
-def test_checkRestartReport_noop_when_empty():
-    with sync_playwright() as pw:
-        b = pw.chromium.launch(headless=True)
-        pg = b.new_page()
-        pg.goto(URL, wait_until="domcontentloaded")
-        pg.wait_for_function("typeof checkRestartReport === 'function'", timeout=10000)
-        res = pg.evaluate(
-            """async () => {
-                const _orig = window.fetch;
-                let forwarded = false;
-                window.fetch = async (url, opts) => {
-                    if (url.includes('/api/restart-report/ack'))
-                        return new Response('{"ok":true}', {status:200, headers:{'Content-Type':'application/json'}});
-                    if (url.includes('/api/restart-report'))
-                        return new Response('{"content":null}', {status:200, headers:{'Content-Type':'application/json'}});
-                    if (url.includes('/api/ai-feedback')) { forwarded = true;
-                        return new Response('{}', {status:200, headers:{'Content-Type':'application/json'}}); }
-                    return new Response('[]', {status:200, headers:{'Content-Type':'application/json'}});
-                };
-                try {
-                    // shrink the poll window so the test is fast
-                    await checkRestartReport();
-                    return { forwarded };
-                } finally { window.fetch = _orig; }
-            }"""
-        )
-        # with content:null the poll gives up after ~12s and nothing is forwarded
-        assert res["forwarded"] is False, res
+        assert res.get("got") is True, res
+        assert res["len"] > 0, res
         b.close()

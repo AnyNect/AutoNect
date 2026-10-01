@@ -502,6 +502,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     loadChatList().then(restoreLastChat);
     loadSupportedExtensions();
+    connectEventSocket();
 });
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1341,36 +1342,45 @@ function postFeedbackWithRetry(body, maxWaitMs) {
     return postWithRetry('/api/ai-feedback', body, maxWaitMs);
 }
 
-/* ── Forward a pending restart report to the AI ─────────────────
-   scripts/restart.sh writes its report to the file the server exposes
-   at /api/restart-report. After a command whose feedback had to be
-   retried (the server was restarting), the frontend checks for that
-   report and feeds it to the AI, so the loop continues with no human
-   step. Guarded so it runs once at a time. */
-let _checkingRestartReport = false;
-async function checkRestartReport() {
-    if (_checkingRestartReport) return;
-    _checkingRestartReport = true;
-    try {
-        // The report is written just AFTER the server reports UP, so a
-        // feedback POST can succeed a moment before the file exists.
-        // Poll for it a few times to close that race.
-        let d = null;
-        for (let i = 0; i < 8; i++) {
-            const r = await fetch('/api/restart-report');
-            if (r.ok) {
-                const j = await r.json();
-                if (j && j.content) { d = j; break; }
-            }
-            await new Promise(res => setTimeout(res, 1500));
+/* ── Event-driven server → UI channel ───────────────────────────
+   The server pushes events over /ws/events (e.g. a restart report).
+   No polling: the socket is opened once and reconnected on close
+   (which is what happens when the server restarts). A pushed
+   restart-report is forwarded to the AI. */
+let _eventWS = null;
+let _eventReconnectDelay = 500;
+
+function connectEventSocket() {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/events`);
+    _eventWS = ws;
+    ws.onopen = () => {
+        _eventReconnectDelay = 500;
+        logger.info('Event socket connected');
+    };
+    ws.onmessage = (ev) => {
+        let m;
+        try { m = JSON.parse(ev.data); } catch (e) { return; }
+        if (m.type === 'restart-report' && m.content) {
+            forwardRestartReport(m.content);
         }
-        if (!d || !d.content) return;
+    };
+    ws.onclose = () => {
+        logger.info('Event socket closed; reconnecting in ' + _eventReconnectDelay + 'ms');
+        setTimeout(connectEventSocket, _eventReconnectDelay);
+        _eventReconnectDelay = Math.min(_eventReconnectDelay * 2, 5000);
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+
+async function forwardRestartReport(content) {
+    try {
         await fetch('/api/restart-report/ack', { method: 'POST' });
-        logger.info('Forwarding restart report to AI', { bytes: d.content.length });
+        logger.info('Forwarding restart report to AI (event)', { bytes: content.length });
         isProcessing = true;
         const resp = await postFeedbackWithRetry({
             command: 'restart report (scripts/restart.sh)',
-            stdout: d.content, stderr: '', exit_code: 0,
+            stdout: content, stderr: '', exit_code: 0,
             chat_id: currentChatId,
         });
         if (resp && resp.ok) {
@@ -1380,7 +1390,6 @@ async function checkRestartReport() {
     } catch (e) {
         logger.warn('restart report forward failed', e);
     } finally {
-        _checkingRestartReport = false;
         isProcessing = false;
         sendBtn.disabled = !promptInput.value.trim();
         processNextQueueTask();
@@ -1463,7 +1472,6 @@ function handleDecline(card) {
             isProcessing = false;
             sendBtn.disabled = !promptInput.value.trim();
             processNextQueueTask();
-            checkRestartReport();
         });
     }
 }
@@ -1726,8 +1734,6 @@ async function handleAllow(card, onComplete = null) {
                 isProcessing = false;
                 sendBtn.disabled = !promptInput.value.trim();
                 processNextQueueTask();
-                // If a restart report is waiting, forward it to the AI.
-                checkRestartReport();
             });
         }
 
