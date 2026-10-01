@@ -282,36 +282,8 @@ def _stt_port_listening(port: int) -> bool:
 
 
 def _maybe_start_stt():
-    """Start the local STT service (:6012) if it is not already running.
-
-    Best-effort: the mic dictation button needs it, but AutoNect must
-    start regardless.  Finds stt-service/ at the project root and runs
-    it with its own venv.  If another AutoNect instance already started
-    one, the port is busy and we skip.
-    """
-    port = int(os.environ.get("AUTONECT_STT_PORT", "6012"))
-    if _stt_port_listening(port):
-        logger.info("STT service already listening on :%d", port)
-        return
-    project_root = BASE_DIR.parent.parent
-    stt_dir = project_root / "stt-service"
-    py = stt_dir / ".venv" / "bin" / "python"
-    if not py.exists():
-        logger.warning("STT service not found at %s; mic dictation disabled", stt_dir)
-        return
-    try:
-        subprocess.Popen(
-            [str(py), "-m", "uvicorn", "server:app",
-             "--host", "127.0.0.1", "--port", str(port)],
-            cwd=str(stt_dir),
-            stdout=open("/tmp/stt-6012.log", "a"),
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info("Started STT service on :%d (from %s)", port, stt_dir)
-    except Exception:
-        logger.exception("Failed to start STT service")
+    """Start the STT service (:6012) if it is not already serving."""
+    _start_stt_process(force=False)
 
 
 async def lifespan(app: FastAPI):
@@ -1433,6 +1405,39 @@ async def publish_restart_report(request: Request):
     return JSONResponse(content={"ok": True, "subscribers": len(_event_subscribers)})
 
 
+def _start_stt_process(force: bool = False) -> bool:
+    """Spawn the STT service. With force=True, spawn regardless of the
+    port state (uvicorn exits harmlessly if the port is taken), so a
+    lingering socket from a dying instance cannot make us skip a start.
+    Returns True if a process was spawned.
+    """
+    port = int(os.environ.get("AUTONECT_STT_PORT", "6012"))
+    if not force and _stt_port_listening(port):
+        logger.info("STT service already listening on :%d", port)
+        return False
+    project_root = BASE_DIR.parent.parent
+    stt_dir = project_root / "stt-service"
+    py = stt_dir / ".venv" / "bin" / "python"
+    if not py.exists():
+        logger.warning("STT service not found at %s", stt_dir)
+        return False
+    try:
+        subprocess.Popen(
+            [str(py), "-m", "uvicorn", "server:app",
+             "--host", "127.0.0.1", "--port", str(port)],
+            cwd=str(stt_dir),
+            stdout=open("/tmp/stt-6012.log", "a"),
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("Started STT service on :%d (force=%s)", port, force)
+        return True
+    except Exception:
+        logger.exception("Failed to start STT service")
+        return False
+
+
 async def _connect_stt(upstream_url):
     """Connect to the STT upstream, starting the service if it is down.
 
@@ -1448,12 +1453,12 @@ async def _connect_stt(upstream_url):
         except Exception as e:
             logger.info("STT upstream not ready (attempt %d): %s", attempt, e)
             if attempt < 3:
-                # start it (no-op if already listening) and give it time
+                # force-start: a lingering socket must not make us skip
                 try:
-                    _maybe_start_stt()
+                    _start_stt_process(force=True)
                 except Exception:
                     logger.exception("STT revive failed")
-                await asyncio.sleep(1.5 * attempt)
+                await asyncio.sleep(2.0 * attempt)
     # last try, let the error propagate
     return await websockets.connect(upstream_url, max_size=None)
 
