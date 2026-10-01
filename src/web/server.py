@@ -1418,13 +1418,38 @@ async def publish_restart_report(request: Request):
 
 
 @app.websocket("/ws/stt")
+async def _connect_stt(upstream_url):
+    """Connect to the STT upstream, starting the service if it is down.
+
+    The service is also brought up at boot, but it can die mid-session
+    (crash, OOM, manual kill). Reviving it here makes the mic self-heal:
+    the browser opens /ws/stt, and if the service is not listening we
+    start it and retry. Returns the open connection or raises.
+    """
+    import websockets
+    for attempt in range(1, 4):
+        try:
+            return await websockets.connect(upstream_url, max_size=None)
+        except Exception as e:
+            logger.info("STT upstream not ready (attempt %d): %s", attempt, e)
+            if attempt < 3:
+                # start it (no-op if already listening) and give it time
+                try:
+                    _maybe_start_stt()
+                except Exception:
+                    logger.exception("STT revive failed")
+                await asyncio.sleep(1.5 * attempt)
+    # last try, let the error propagate
+    return await websockets.connect(upstream_url, max_size=None)
+
+
 async def websocket_stt_proxy(client_ws: WebSocket):
     import websockets
     await client_ws.accept()
     query = client_ws.url.query
     upstream_url = STT_UPSTREAM + (("?" + query) if query else "")
     try:
-        async with websockets.connect(upstream_url, max_size=None) as up:
+        async with await _connect_stt(upstream_url) as up:
             async def client_to_up():
                 try:
                     while True:
