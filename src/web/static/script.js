@@ -655,11 +655,8 @@ async function sendToAI(promptText) {
     const chatId = currentChatId || null;
     try {
         logger.debug('Sending to AI', { chatId, prompt: promptText.substring(0, 50) });
-        const response = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: promptText, session_id: chatId }),
-        });
+        const response = await postWithRetry('/api/chat',
+            { prompt: promptText, session_id: chatId });
         if (!response.ok) throw new Error('Server returned ' + response.status);
         const data = await response.json();
         logger.info('AI response received', { commands: data.commands?.length || 0 });
@@ -1294,15 +1291,50 @@ async function openNativeTerminal(command) {
     }
 }
 
+/* ── Durable feedback delivery across a server restart ──────────
+   When a command restarts AutoNect (scripts/restart.sh), the
+   /ws/execute socket dies and the server goes down. The feedback POST
+   carrying that command's output would then fail and the output would
+   be LOST, stalling the AI loop until a human reconnects. Retry the
+   POST with exponential backoff until the new server answers, so a
+   self-restart survives end to end. */
+async function postWithRetry(url, body, maxWaitMs = 180000) {
+    const start = Date.now();
+    let delay = 500;
+    let attempt = 0;
+    while (true) {
+        attempt++;
+        try {
+            return await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        } catch (err) {
+            const elapsed = Date.now() - start;
+            if (elapsed >= maxWaitMs) {
+                logger.error('POST ' + url + ' gave up after ' + elapsed + 'ms', err);
+                throw err;
+            }
+            logger.warn('POST ' + url + ' failed (server restarting?); retry ' + attempt + ' in ' + delay + 'ms');
+            await new Promise(r => setTimeout(r, delay));
+            delay = Math.min(delay * 2, 5000);
+        }
+    }
+}
+
+// Kept as a thin alias for the feedback call sites.
+function postFeedbackWithRetry(body, maxWaitMs) {
+    return postWithRetry('/api/ai-feedback', body, maxWaitMs);
+}
+
 async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
     return (async () => {
     pendingFeedback++;
     try {
         logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId });
-        const fbResponse = await fetch('/api/ai-feedback', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ commands: outputs, chat_id: chatId, output_id: outputId }),
+        const fbResponse = await postFeedbackWithRetry({
+            commands: outputs, chat_id: chatId, output_id: outputId,
         });
         if (fbResponse.ok) {
             const fbData = await fbResponse.json();
@@ -1575,17 +1607,13 @@ async function handleAllow(card, onComplete = null) {
                     chatId: currentChatId,
                     outputId
                 });
-                const fbResponse = await fetch('/api/ai-feedback', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        command: cmd,
-                        stdout: out,
-                        stderr: '',
-                        exit_code: code,
-                        chat_id: currentChatId,
-                        output_id: outputId
-                    }),
+                const fbResponse = await postFeedbackWithRetry({
+                    command: cmd,
+                    stdout: out,
+                    stderr: '',
+                    exit_code: code,
+                    chat_id: currentChatId,
+                    output_id: outputId
                 });
                 if (fbResponse.ok) {
                     const fbData = await fbResponse.json();
