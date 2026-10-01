@@ -76,7 +76,12 @@ fi
 # waits on inotify internally; grep -m1 returns on the first match;
 # timeout 120 bounds the wait). No sleep-poll loop.
 UP=0
-if timeout 120 tail -n0 -F "$LOG" 2>/dev/null | grep -m1 -q "DeepSeek provider connected"; then
+# The start command above truncated "$LOG" (`> "$LOG"`), so reading it
+# from the beginning is race-free: tail -n +1 -F emits everything
+# already written AND blocks for new writes (inotify under the hood).
+# grep -m1 -q returns on the first match; timeout bounds the wait.
+# No sleep-poll.
+if timeout 120 stdbuf -oL -eL tail -n +1 -F "$LOG" 2>/dev/null | grep -m1 -q "DeepSeek provider connected"; then
     UP=1
 else
     UP=0
