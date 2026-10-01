@@ -1341,6 +1341,52 @@ function postFeedbackWithRetry(body, maxWaitMs) {
     return postWithRetry('/api/ai-feedback', body, maxWaitMs);
 }
 
+/* ── Forward a pending restart report to the AI ─────────────────
+   scripts/restart.sh writes its report to the file the server exposes
+   at /api/restart-report. After a command whose feedback had to be
+   retried (the server was restarting), the frontend checks for that
+   report and feeds it to the AI, so the loop continues with no human
+   step. Guarded so it runs once at a time. */
+let _checkingRestartReport = false;
+async function checkRestartReport() {
+    if (_checkingRestartReport) return;
+    _checkingRestartReport = true;
+    try {
+        // The report is written just AFTER the server reports UP, so a
+        // feedback POST can succeed a moment before the file exists.
+        // Poll for it a few times to close that race.
+        let d = null;
+        for (let i = 0; i < 8; i++) {
+            const r = await fetch('/api/restart-report');
+            if (r.ok) {
+                const j = await r.json();
+                if (j && j.content) { d = j; break; }
+            }
+            await new Promise(res => setTimeout(res, 1500));
+        }
+        if (!d || !d.content) return;
+        await fetch('/api/restart-report/ack', { method: 'POST' });
+        logger.info('Forwarding restart report to AI', { bytes: d.content.length });
+        isProcessing = true;
+        const resp = await postFeedbackWithRetry({
+            command: 'restart report (scripts/restart.sh)',
+            stdout: d.content, stderr: '', exit_code: 0,
+            chat_id: currentChatId,
+        });
+        if (resp && resp.ok) {
+            const fb = await resp.json();
+            if (fb.answer) addMessage('assistant', fb.answer, fb.thinking, fb.commands || [], false);
+        }
+    } catch (e) {
+        logger.warn('restart report forward failed', e);
+    } finally {
+        _checkingRestartReport = false;
+        isProcessing = false;
+        sendBtn.disabled = !promptInput.value.trim();
+        processNextQueueTask();
+    }
+}
+
 async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
     return (async () => {
     pendingFeedback++;
@@ -1417,6 +1463,7 @@ function handleDecline(card) {
             isProcessing = false;
             sendBtn.disabled = !promptInput.value.trim();
             processNextQueueTask();
+            checkRestartReport();
         });
     }
 }
@@ -1679,6 +1726,8 @@ async function handleAllow(card, onComplete = null) {
                 isProcessing = false;
                 sendBtn.disabled = !promptInput.value.trim();
                 processNextQueueTask();
+                // If a restart report is waiting, forward it to the AI.
+                checkRestartReport();
             });
         }
 

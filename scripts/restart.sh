@@ -61,10 +61,12 @@ sleep 1
 echo "Starting AutoNect..."
 cd "$APPDIR" || { echo "cd failed"; exit 1; }
 if [ -n "$PROFILE" ]; then
-    AUTONECT_PROFILE="$PROFILE" setsid "$BIN" start --host "$HOST" --port "$PORT" "${CERT_ARGS[@]}" \
+    AUTONECT_PROFILE="$PROFILE" AUTONECT_STATUS="$STATUS" \
+        setsid "$BIN" start --host "$HOST" --port "$PORT" "${CERT_ARGS[@]}" \
         > "$LOG" 2>&1 < /dev/null &
 else
-    setsid "$BIN" start --host "$HOST" --port "$PORT" "${CERT_ARGS[@]}" \
+    AUTONECT_STATUS="$STATUS" \
+        setsid "$BIN" start --host "$HOST" --port "$PORT" "${CERT_ARGS[@]}" \
         > "$LOG" 2>&1 < /dev/null &
 fi
 } >> "$RESTART_LOG" 2>&1

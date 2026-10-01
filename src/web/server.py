@@ -783,6 +783,36 @@ async def get_for_ai_context():
     return JSONResponse(content={"content": content, "path": str(CONTEXT_FILE_PATH)})
 
 
+@app.get("/api/restart-report")
+async def get_restart_report():
+    """Latest restart report written by scripts/restart.sh, if any.
+
+    The frontend polls this after a command whose feedback needed a
+    retry (i.e. the server was restarting) and forwards the report to
+    the AI, so a self-restart's outcome reaches the AI with no human
+    step.
+    """
+    f = Path(os.environ.get("AUTONECT_STATUS", "/tmp/autonect-restart-status.txt"))
+    try:
+        if f.exists():
+            return JSONResponse(content={"content": f.read_text(encoding="utf-8"),
+                                         "mtime": f.stat().st_mtime})
+    except Exception as e:
+        logger.debug("restart-report read failed: %s", e)
+    return JSONResponse(content={"content": None})
+
+
+@app.post("/api/restart-report/ack")
+async def ack_restart_report():
+    """Mark the restart report as consumed (delete it)."""
+    f = Path(os.environ.get("AUTONECT_STATUS", "/tmp/autonect-restart-status.txt"))
+    try:
+        f.unlink()
+    except Exception:
+        pass
+    return JSONResponse(content={"ok": True})
+
+
 @app.get("/api/chats/{chat_id}")
 async def get_chat_history(chat_id: str):
     chat = get_chat(chat_id)
