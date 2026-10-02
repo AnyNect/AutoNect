@@ -702,8 +702,18 @@ function hasPendingCommandWork() {
 
 function shouldQueueMessage() {
     if (isPaused) return true;
-    if (isProcessing) return true;
+    // Queue while command work is pending ONLY under Auto-Allow. The
+    // queue's job there is to wait out auto-executed commands so a
+    // queued message does not race the next command group (issue #7).
+    // With Auto-Allow OFF the user paces approvals manually and must
+    // be able to send a new message while a command waits -- that
+    // goes direct. (2026-10-02: previously the bare isProcessing check
+    // caught the pending-approval case too, so messages queued with no
+    // visible reason and no timer to release them.)
     if (autoAllowEnabled && hasPendingCommandWork()) return true;
+    // Still queue while an AI request is in flight and nothing is
+    // waiting on manual approval.
+    if (isProcessing && !hasPendingCommandWork()) return true;
     return false;
 }
 
@@ -1629,7 +1639,11 @@ function handleDecline(card) {
         group.completed++;
         if (group.completed === group.total && !group.resolved) {
             group.resolved = true;
-            activeCommandGroup = null;
+            // Only clear if it still names THIS group (Auto-Allow OFF
+            // can now send a new message while a command waits; if its
+            // reply spawns a second group, activeCommandGroup points at
+            // that one and nulling here would release the queue early).
+            if (activeCommandGroup === group) activeCommandGroup = null;
             // Await the feedback: its reply may spawn a new command group,
             // and draining the queue before it lands is the issue #7 race.
             feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, null, group.attachPaths);
@@ -1890,7 +1904,8 @@ async function handleAllow(card, onComplete = null) {
             group.completed++;
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
-                activeCommandGroup = null;
+                // Only clear if it still names THIS group -- see handleDecline.
+                if (activeCommandGroup === group) activeCommandGroup = null;
                 // outputId intentionally omitted -- see sendBatchFeedback.
                 feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, null, group.attachPaths);
                 batchDone = true;
