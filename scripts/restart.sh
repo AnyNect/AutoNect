@@ -14,7 +14,7 @@ set -u
 APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${AUTONECT_PORT:-8000}"
 HOST="${AUTONECT_HOST:-0.0.0.0}"
-PROFILE="${AUTONECT_PROFILE:-}"
+PROFILE="${AUTONECT_PROFILE:-$HOME/.autonect/browser-profile}"
 LOG="${AUTONECT_LIVE_LOG:-/tmp/autonect-live.log}"
 RESTART_LOG="${AUTONECT_RESTART_LOG:-/tmp/autonect-restart.log}"
 STATUS="${AUTONECT_STATUS:-/tmp/autonect-restart-status.txt}"
