@@ -897,6 +897,21 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                 historical
             });
 
+            // Strip raw skill-tag blocks (<command>/<attach>/<kaggle>)
+            // from the bubble FIRST, before the commandSkills gate.
+            // A turn whose only skill is <attach> or <kaggle> never
+            // enters the block below, so leaving this inside it made
+            // the raw <attach> fence render as a duplicate text block
+            // above its skill card (2026-10-02 bug).
+            bubble.querySelectorAll('pre').forEach((preEl) => {
+                const codeEl = preEl.querySelector('code');
+                if (!codeEl) return;
+                const codeText = codeEl.textContent.trim();
+                if (/^<(command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                    preEl.remove();
+                }
+            });
+
             let group = null;
             if (commandSkills.length > 0) {
                 group = {
@@ -1526,9 +1541,15 @@ async function sendBatchFeedback(outputs, chatId = null, outputId = null, files 
     return (async () => {
     pendingFeedback++;
     try {
-        logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId, files: files ? files.length : 0 });
+        logger.debug('Sending batch feedback', { count: outputs.length, chatId, files: files ? files.length : 0 });
+        // DO NOT send output_id here. The batch already carries every
+        // command's stdout in `outputs`. If output_id is also sent,
+        // server.py's ai_feedback() pops its cache (the LAST card's
+        // output only) into stdout_content, and the `is_multi` gate
+        // becomes False -- so the server sends ONE command's output
+        // and silently drops the rest. Regression seen 2026-10-02.
         const fbResponse = await postFeedbackWithRetry({
-            commands: outputs, chat_id: chatId, output_id: outputId,
+            commands: outputs, chat_id: chatId,
             files: files || [],
         });
         if (fbResponse.ok) {
@@ -1870,7 +1891,8 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, outputId, group.attachPaths);
+                // outputId intentionally omitted -- see sendBatchFeedback.
+                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, null, group.attachPaths);
                 batchDone = true;
             }
         } else {

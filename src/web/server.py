@@ -614,7 +614,14 @@ async def ai_feedback(request: AIFeedbackRequest):
     logger.info("AI feedback request received")
 
     stdout = request.stdout or ""
-    if not stdout and request.output_id:
+    # HARDENING (2026-10-02): when a BATCH of commands is present, do
+    # NOT populate stdout from the output_id cache. output_id names ONE
+    # command's output, and setting stdout_content from it makes the
+    # is_multi gate below False -- the server then sends only that one
+    # command's output and silently drops the rest of the batch. A
+    # stale (cached) client could still send both fields, so the
+    # server refuses to trust the single-output hint.
+    if not stdout and request.output_id and not request.commands:
         cached = _output_cache.pop(request.output_id, None)
         if cached:
             stdout = cached
