@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
+from src.skills import get_handler as _get_skill_handler
 from src.security import CommandGuard
 from src.core.config import config
 from src.database import upsert_chat, add_message, get_chat_list, get_chat, get_chat_by_url, update_chat, delete_chat, update_chat_name, chat_exists
@@ -431,6 +432,76 @@ def _annotate_commands_with_safety(commands: list[dict], session_id: str = "defa
     return annotated
 
 
+def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
+    """Run non-command skills (attach, kaggle, ...) through their handlers.
+
+    'command' is left untouched -- it runs through the PTY path in the
+    frontend. Every other skill gets its payload handed to the handler
+    and the result is stored under cmd['result']. Unknown skills drop.
+    """
+    out = []
+    for cmd in commands:
+        skill = cmd.get("skill", "command")
+        if skill == "command":
+            out.append(cmd); continue
+        handler = _get_skill_handler(skill)
+        if handler is None:
+            logger.warning("Unknown skill %r -- dropping", skill); continue
+        try:
+            result = handler(cmd["code"], {"session_id": session_id})
+        except Exception as e:
+            logger.exception("Skill %r raised", skill)
+            result = {"error": str(e)}
+        cmd = dict(cmd); cmd["result"] = result
+        out.append(cmd)
+    return out
+
+
+async def _run_attach_rounds(provider, loop, thinking, answer, commands, session_id):
+    """Self-drain <attach>: attach files and continue in the SAME request.
+
+    The AI emits <attach>, the server attaches the files with
+    set_input_files and sends a continuation prompt, so the AI reads
+    the files in this turn -- like command output feeding back. Bounded
+    to 3 rounds. Called from BOTH /api/chat and /api/ai-feedback
+    (feedback replies carry skill tags too).
+    """
+    MAX_ATTACH_ROUNDS = 3
+    for _round in range(MAX_ATTACH_ROUNDS):
+        paths = []
+        for c in commands:
+            if c.get("skill") == "attach":
+                paths.extend(
+                    f["path"] for f in (c.get("result") or {}).get("files", [])
+                )
+        paths = [q for q in paths if Path(q).is_file()]
+        if not paths:
+            break
+        logger.info("Self-drain: attaching %d file(s), round %d",
+                    len(paths), _round + 1)
+
+        def continue_and_get(_paths=paths):
+            selector = provider.selectors.get("file_input", "input[type='file']")
+            provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+            provider.page.set_input_files(selector, _paths)
+            provider.send_prompt(
+                "[ATTACHED FILES]\n"
+                "The files you requested are attached. "
+                "Read them and continue with the task.\n"
+                "[/ATTACHED FILES]"
+            )
+            return provider.get_response()
+
+        response = await loop.run_in_executor(_provider_executor, continue_and_get)
+        t2, a2, c2 = _extract_response(response, session_id)
+        if a2:
+            answer = a2
+        if t2:
+            thinking = t2
+        commands = commands + c2
+    return thinking, answer, commands
+
+
 def _extract_response(response: dict, session_id: str = "default") -> tuple[str, str, list[dict]]:
     thinking = response.get("thinking", "")
     answer = response.get("answer", "")
@@ -443,6 +514,7 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     thinking_codes = {cmd["code"] for cmd in thinking_commands}
     commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
     commands = _annotate_commands_with_safety(commands, session_id)
+    commands = _dispatch_skills(commands, session_id)
     return thinking, answer, commands
 
 
@@ -538,6 +610,11 @@ async def chat(request: ChatRequest):
     try:
         response = await loop.run_in_executor(_provider_executor, send_and_get)
         thinking, answer, commands = _extract_response(response, request.session_id)
+
+        # Self-drain <attach> in the same request (shared helper).
+        thinking, answer, commands = await _run_attach_rounds(
+            provider, loop, thinking, answer, commands, request.session_id
+        )
 
         global _current_chat_id
         _current_chat_id = request.session_id
@@ -676,6 +753,12 @@ async def ai_feedback(request: AIFeedbackRequest):
     try:
         ai_response = await loop.run_in_executor(_provider_executor, send_wrapped_and_get)
         thinking, answer, commands = _extract_response(ai_response)
+
+        # Self-drain here too -- feedback replies can carry <attach>.
+        thinking, answer, commands = await _run_attach_rounds(
+            provider, loop, thinking, answer, commands,
+            request.chat_id or "default",
+        )
 
         if request.chat_id:
             add_message(request.chat_id, "assistant", answer, thinking, commands)

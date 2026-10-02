@@ -436,6 +436,15 @@ class DeepSeekProvider(AIProvider):
                 markdown = markdown.replace(placeholder_str, f"\n\n```command\n{code}\n```\n\n")
                 continue
 
+            # Skill-tag blocks (<command>, <attach>, <kaggle>, ...) must
+            # NOT get the fancy HTML code-box wrapper -- the frontend
+            # detects and strips them. Wrap in a plain fence instead.
+            if re.match(r"^\s*(?:<|&lt;)[a-zA-Z_][\w-]*(?:>|&gt;)", code):
+                markdown = markdown.replace(
+                    placeholder_str, f"\n\n```\n{code}\n```\n\n"
+                )
+                continue
+
             encoded_code = base64.b64encode(code.encode('utf-8')).decode('utf-8')
             escaped_code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             escaped_code = re.sub(r'\n(?=\n)', '\n&#8203;', escaped_code)

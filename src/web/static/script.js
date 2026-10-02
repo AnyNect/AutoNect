@@ -880,46 +880,65 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
             if (pre) pre.style.color = '';
         });
         if (commands && commands.length > 0) {
-            logger.debug('Adding command cards', { count: commands.length, historical });
-            const group = {
+            // CRITICAL (2026-10-02 regression): split into shell commands
+            // and other skills. The approval group's total MUST count
+            // ONLY shell commands -- non-command skills never increment
+            // group.completed, so counting them would leave the group
+            // unresolved and the Auto-Allow queue stuck forever.
+            const split = (typeof splitSkills === 'function')
+                ? splitSkills(commands)
+                : { commandSkills: commands, otherSkills: [] };
+            const commandSkills = split.commandSkills;
+            const otherSkills = split.otherSkills;
+            logger.debug('Adding command cards', {
                 total: commands.length,
-                completed: 0,
-                outputs: [],
-                resolved: false,
-                onComplete: null,
-                chat_id: currentChatId,
-                historical: historical
-            };
-            // Only live renders should own the active group. Historical
-            // renders (loading a past chat) must not clobber the state
-            // used by executeTask to decide whether the queue is busy.
-            if (!historical) {
-                activeCommandGroup = group;
-            }
-            let remainingCommands = [...commands];
-            const preBlocks = bubble.querySelectorAll('pre');
-            preBlocks.forEach((preEl) => {
-                const codeEl = preEl.querySelector('code');
-                if (!codeEl) return;
-                const codeText = codeEl.textContent.trim();
-                const isCommandClass = codeEl.className.includes('command') || codeEl.className.includes('language-command');
-                const matchIndex = remainingCommands.findIndex(cmd => cmd.code.trim() === codeText);
-                if (matchIndex !== -1) {
-                    const cmd = remainingCommands[matchIndex];
-                    const cmdSection = createCommandSection([cmd], group);
-                    preEl.parentNode.replaceChild(cmdSection, preEl);
-                    remainingCommands.splice(matchIndex, 1);
-                } else if (isCommandClass && remainingCommands.length > 0) {
-                    const cmd = remainingCommands[0];
-                    const cmdSection = createCommandSection([cmd], group);
-                    preEl.parentNode.replaceChild(cmdSection, preEl);
-                    remainingCommands.shift();
-                }
+                commands: commandSkills.length,
+                otherSkills: otherSkills.length,
+                historical
             });
-            if (remainingCommands.length > 0) {
-                const fallbackSection = createCommandSection(remainingCommands, group);
-                bubble.appendChild(fallbackSection);
-                logger.debug('Added fallback command cards', { count: remainingCommands.length });
+
+            if (commandSkills.length > 0) {
+                const group = {
+                    total: commandSkills.length,
+                    completed: 0,
+                    outputs: [],
+                    resolved: false,
+                    onComplete: null,
+                    chat_id: currentChatId,
+                    historical: historical
+                };
+                if (!historical) {
+                    activeCommandGroup = group;
+                }
+                const remainingCommands = [...commandSkills];
+                const preBlocks = bubble.querySelectorAll('pre');
+                preBlocks.forEach((preEl) => {
+                    const codeEl = preEl.querySelector('code');
+                    if (!codeEl) return;
+                    const codeText = codeEl.textContent.trim();
+                    // Skip tag blocks -- those are handled below.
+                    if (/^<(command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                        return;
+                    }
+                    const matchIndex = remainingCommands.findIndex(cmd => (cmd.code || '').trim() === codeText);
+                    if (matchIndex !== -1) {
+                        const cmd = remainingCommands[matchIndex];
+                        const cmdSection = createCommandSection([cmd], group);
+                        preEl.parentNode.replaceChild(cmdSection, preEl);
+                        remainingCommands.splice(matchIndex, 1);
+                    }
+                });
+                if (remainingCommands.length > 0) {
+                    const fallbackSection = createCommandSection(remainingCommands, group);
+                    bubble.appendChild(fallbackSection);
+                    logger.debug('Added fallback command cards', { count: remainingCommands.length });
+                }
+            }
+
+            if (otherSkills.length > 0) {
+                const skillSection = createSkillSection(otherSkills, historical);
+                bubble.appendChild(skillSection);
+                logger.debug('Added skill cards', { count: otherSkills.length });
             }
         }
     } else {
@@ -1137,6 +1156,87 @@ function toggleDictation() {
     }).catch((err) => {
         logger.warn('Microphone permission failed', { err: String(err) });
     });
+}
+
+/* ── Skill cards (attach, kaggle, ...) ────────────────────────────
+   Non-command skills run server-side before the answer reaches the UI.
+   cmd.result holds the handler's return value. These cards are
+   informational -- they never enter the approval group, so they cannot
+   affect the Auto-Allow queue. */
+function createSkillSection(skillCmds, historical) {
+    const section = document.createElement('div');
+    section.className = 'skill-section';
+    skillCmds.forEach((cmd) => {
+        const skill = (cmd && cmd.skill) || 'skill';
+        const result = (cmd && cmd.result) || {};
+        const card = document.createElement('div');
+        card.className = 'skill-card';
+        card.dataset.skill = skill;
+
+        const header = document.createElement('div');
+        header.className = 'skill-header';
+        header.innerHTML =
+            '<span class="skill-badge">' + escapeHtml(skill) + '</span>' +
+            '<span class="skill-title">' + escapeHtml(skillTitle(skill)) + '</span>';
+        card.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'skill-body';
+
+        if (skill === 'attach') {
+            const files = result.files || [];
+            const errors = result.errors || [];
+            if (files.length > 0) {
+                const ok = document.createElement('div');
+                ok.className = 'skill-ok';
+                ok.textContent = files.length + ' file' + (files.length === 1 ? '' : 's') +
+                    ' attached to the AI';
+                body.appendChild(ok);
+                files.forEach(f => {
+                    const row = document.createElement('div');
+                    row.className = 'skill-file';
+                    row.textContent = f.path + '  (' + humanBytes(f.bytes) + ', ' + f.mime + ')';
+                    body.appendChild(row);
+                });
+            }
+            errors.forEach(e => {
+                const row = document.createElement('div');
+                row.className = 'skill-err';
+                row.textContent = e.path + ' \u2014 ' + e.reason;
+                body.appendChild(row);
+            });
+        } else {
+            const pre = document.createElement('pre');
+            pre.className = 'skill-code';
+            const code = document.createElement('code');
+            code.textContent = (cmd && cmd.code) || '';
+            pre.appendChild(code);
+            body.appendChild(pre);
+            const res = document.createElement('div');
+            res.className = 'skill-result';
+            res.textContent = JSON.stringify(result);
+            body.appendChild(res);
+        }
+
+        card.appendChild(body);
+        section.appendChild(card);
+    });
+    return section;
+}
+
+function skillTitle(skill) {
+    switch (skill) {
+        case 'attach': return 'Files sent to AI';
+        case 'kaggle': return 'Kaggle';
+        default: return skill;
+    }
+}
+
+function humanBytes(n) {
+    if (!n && n !== 0) return '?';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 function createCommandSection(commands, group = null) {
