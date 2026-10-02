@@ -445,6 +445,17 @@ def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
         skill = cmd.get("skill", "command")
         if skill == "command":
             out.append(cmd); continue
+        if skill == "attach":
+            # Resolution happens at FEEDBACK time (after commands ran),
+            # so files a command creates exist by then. Store the raw
+            # paths for the frontend to send back.
+            cmd = dict(cmd)
+            cmd["result"] = {"paths": [
+                ln.strip() for ln in cmd["code"].splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]}
+            out.append(cmd)
+            continue
         handler = _get_skill_handler(skill)
         if handler is None:
             logger.warning("Unknown skill %r -- dropping", skill); continue
@@ -619,24 +630,44 @@ async def ai_feedback(request: AIFeedbackRequest):
     loop = asyncio.get_running_loop()
 
     def send_wrapped_and_get():
-        # <attach> path: the frontend fires this after an attach card,
-        # exactly like command output. Attach the files and let the AI
-        # continue -- no server-side loop, no swallowed message.
-        if request.files:
-            paths = [q for q in request.files if Path(q).is_file()]
-            if paths:
-                selector = provider.selectors.get("file_input", "input[type='file']")
-                provider.page.wait_for_selector(selector, state="attached", timeout=10000)
-                provider.page.set_input_files(selector, paths)
-                logger.info("Attach feedback: attached %d file(s)", len(paths))
-                provider.send_prompt(
-                    "[ATTACHED FILES]\n"
-                    "The files you requested are attached. "
-                    "Read them and continue with the task.\n"
-                    "[/ATTACHED FILES]"
-                )
-                return provider.get_response()
-            logger.warning("Attach feedback: no valid files in %s", request.files)
+        # Resolve <attach> files at FEEDBACK time -- after the commands
+        # ran, so files a command just created now exist. Re-validate
+        # through the attach handler so the allowlist still applies.
+        # Files ride the SAME prompt as the command output.
+        attach_paths = []
+        for raw in (request.files or []):
+            try:
+                res = _get_skill_handler("attach")(raw, {})
+                attach_paths.extend(f["path"] for f in res.get("files", []))
+            except Exception as e:
+                logger.warning("attach resolve failed for %r: %s", raw, e)
+
+        has_cmd_work = bool(stdout) or bool(request.commands) or bool(request.command)
+
+        if attach_paths:
+            selector = provider.selectors.get("file_input", "input[type='file']")
+            provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+            provider.page.set_input_files(selector, attach_paths)
+            logger.info("Feedback: attached %d file(s)", len(attach_paths))
+
+        # Attach-only turn: deliver the files, no command text.
+        if not has_cmd_work:
+            provider.send_prompt(
+                "[ATTACHED FILES]\n"
+                "The files you requested are attached. "
+                "Read them and continue with the task.\n"
+                "[/ATTACHED FILES]"
+            )
+            return provider.get_response()
+
+        attach_note = ""
+        if attach_paths:
+            attach_note = (
+                "\n\n[ATTACHED FILES]\n"
+                "The files you requested are attached. "
+                "Read them and continue with the task.\n"
+                "[/ATTACHED FILES]"
+            )
 
         stdout_content = stdout
         command_display = request.command or ""
@@ -692,7 +723,7 @@ async def ai_feedback(request: AIFeedbackRequest):
                 logger.info("Large output file attached to DeepSeek: %s", temp_file.name)
 
                 provider.send_prompt(
-                    f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display or 'unknown'}\nThe output is attached as a file.\n[/SYSTEM_COMMAND_OUTPUT]"
+                    f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display or 'unknown'}\nThe output is attached as a file.\n[/SYSTEM_COMMAND_OUTPUT]" + attach_note
                 )
             except Exception as e:
                 logger.error("Failed to upload output file: %s", e)
@@ -703,7 +734,7 @@ async def ai_feedback(request: AIFeedbackRequest):
                     wrapped = build_wrapped_command_output(
                         request.command, request.exit_code, truncated, request.stderr or ""
                     )
-                provider.send_prompt(wrapped)
+                provider.send_prompt(wrapped + attach_note)
             finally:
                 try:
                     if temp_file.exists():
@@ -717,7 +748,7 @@ async def ai_feedback(request: AIFeedbackRequest):
                 wrapped = build_wrapped_command_output(
                     request.command, request.exit_code, stdout_content or "", request.stderr or ""
                 )
-            provider.send_prompt(wrapped)
+            provider.send_prompt(wrapped + attach_note)
         return provider.get_response()
 
     try:

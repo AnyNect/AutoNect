@@ -897,13 +897,15 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                 historical
             });
 
+            let group = null;
             if (commandSkills.length > 0) {
-                const group = {
+                group = {
                     total: commandSkills.length,
                     completed: 0,
                     outputs: [],
                     resolved: false,
                     onComplete: null,
+                    attachPaths: [],
                     chat_id: currentChatId,
                     historical: historical
                 };
@@ -939,7 +941,7 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
             }
 
             if (otherSkills.length > 0) {
-                const skillSection = createSkillSection(otherSkills, historical);
+                const skillSection = createSkillSection(otherSkills, historical, group);
                 bubble.appendChild(skillSection);
                 logger.debug('Added skill cards', { count: otherSkills.length });
             }
@@ -1166,7 +1168,7 @@ function toggleDictation() {
    cmd.result holds the handler's return value. These cards are
    informational -- they never enter the approval group, so they cannot
    affect the Auto-Allow queue. */
-function createSkillSection(skillCmds, historical) {
+function createSkillSection(skillCmds, historical, group = null) {
     const section = document.createElement('div');
     section.className = 'skill-section';
     skillCmds.forEach((cmd) => {
@@ -1201,11 +1203,17 @@ function createSkillSection(skillCmds, historical) {
                     row.textContent = f.path + '  (' + humanBytes(f.bytes) + ', ' + f.mime + ')';
                     body.appendChild(row);
                 });
-                // Live renders fire the feedback; historical loads do not
-                // (the reply is already in the chat).
+                // Live only. If a command group is active in this turn,
+                // stash the paths on the group so they ride the SAME
+                // feedback POST as the command output (resolved after the
+                // commands ran). Otherwise fire standalone.
                 if (!historical) {
                     const paths = files.map(f => f.path);
-                    setTimeout(() => sendAttachFeedback(paths, currentChatId), 50);
+                    if (group) {
+                        group.attachPaths = (group.attachPaths || []).concat(paths);
+                    } else {
+                        setTimeout(() => sendAttachFeedback(paths, currentChatId), 50);
+                    }
                 }
             }
             errors.forEach(e => {
@@ -1505,13 +1513,14 @@ async function forwardRestartReport(content) {
     }
 }
 
-async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
+async function sendBatchFeedback(outputs, chatId = null, outputId = null, files = null) {
     return (async () => {
     pendingFeedback++;
     try {
-        logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId });
+        logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId, files: files ? files.length : 0 });
         const fbResponse = await postFeedbackWithRetry({
             commands: outputs, chat_id: chatId, output_id: outputId,
+            files: files || [],
         });
         if (fbResponse.ok) {
             const fbData = await fbResponse.json();
@@ -1593,7 +1602,7 @@ function handleDecline(card) {
             activeCommandGroup = null;
             // Await the feedback: its reply may spawn a new command group,
             // and draining the queue before it lands is the issue #7 race.
-            feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id);
+            feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, null, group.attachPaths);
             batchDone = true;
         }
     } else {
@@ -1852,7 +1861,7 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, outputId);
+                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, outputId, group.attachPaths);
                 batchDone = true;
             }
         } else {
