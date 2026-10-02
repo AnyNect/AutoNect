@@ -358,6 +358,7 @@ class ChatResponse(BaseModel):
 
 class AIFeedbackRequest(BaseModel):
     commands: list[dict] = []
+    files: list[str] = []
     command: str | None = None
     stdout: str | None = None
     stderr: str | None = None
@@ -455,51 +456,6 @@ def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
         cmd = dict(cmd); cmd["result"] = result
         out.append(cmd)
     return out
-
-
-async def _run_attach_rounds(provider, loop, thinking, answer, commands, session_id):
-    """Self-drain <attach>: attach files and continue in the SAME request.
-
-    The AI emits <attach>, the server attaches the files with
-    set_input_files and sends a continuation prompt, so the AI reads
-    the files in this turn -- like command output feeding back. Bounded
-    to 3 rounds. Called from BOTH /api/chat and /api/ai-feedback
-    (feedback replies carry skill tags too).
-    """
-    MAX_ATTACH_ROUNDS = 3
-    for _round in range(MAX_ATTACH_ROUNDS):
-        paths = []
-        for c in commands:
-            if c.get("skill") == "attach":
-                paths.extend(
-                    f["path"] for f in (c.get("result") or {}).get("files", [])
-                )
-        paths = [q for q in paths if Path(q).is_file()]
-        if not paths:
-            break
-        logger.info("Self-drain: attaching %d file(s), round %d",
-                    len(paths), _round + 1)
-
-        def continue_and_get(_paths=paths):
-            selector = provider.selectors.get("file_input", "input[type='file']")
-            provider.page.wait_for_selector(selector, state="attached", timeout=10000)
-            provider.page.set_input_files(selector, _paths)
-            provider.send_prompt(
-                "[ATTACHED FILES]\n"
-                "The files you requested are attached. "
-                "Read them and continue with the task.\n"
-                "[/ATTACHED FILES]"
-            )
-            return provider.get_response()
-
-        response = await loop.run_in_executor(_provider_executor, continue_and_get)
-        t2, a2, c2 = _extract_response(response, session_id)
-        if a2:
-            answer = a2
-        if t2:
-            thinking = t2
-        commands = commands + c2
-    return thinking, answer, commands
 
 
 def _extract_response(response: dict, session_id: str = "default") -> tuple[str, str, list[dict]]:
@@ -611,11 +567,6 @@ async def chat(request: ChatRequest):
         response = await loop.run_in_executor(_provider_executor, send_and_get)
         thinking, answer, commands = _extract_response(response, request.session_id)
 
-        # Self-drain <attach> in the same request (shared helper).
-        thinking, answer, commands = await _run_attach_rounds(
-            provider, loop, thinking, answer, commands, request.session_id
-        )
-
         global _current_chat_id
         _current_chat_id = request.session_id
 
@@ -668,6 +619,25 @@ async def ai_feedback(request: AIFeedbackRequest):
     loop = asyncio.get_running_loop()
 
     def send_wrapped_and_get():
+        # <attach> path: the frontend fires this after an attach card,
+        # exactly like command output. Attach the files and let the AI
+        # continue -- no server-side loop, no swallowed message.
+        if request.files:
+            paths = [q for q in request.files if Path(q).is_file()]
+            if paths:
+                selector = provider.selectors.get("file_input", "input[type='file']")
+                provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+                provider.page.set_input_files(selector, paths)
+                logger.info("Attach feedback: attached %d file(s)", len(paths))
+                provider.send_prompt(
+                    "[ATTACHED FILES]\n"
+                    "The files you requested are attached. "
+                    "Read them and continue with the task.\n"
+                    "[/ATTACHED FILES]"
+                )
+                return provider.get_response()
+            logger.warning("Attach feedback: no valid files in %s", request.files)
+
         stdout_content = stdout
         command_display = request.command or ""
         cmds = request.commands or []
@@ -753,12 +723,6 @@ async def ai_feedback(request: AIFeedbackRequest):
     try:
         ai_response = await loop.run_in_executor(_provider_executor, send_wrapped_and_get)
         thinking, answer, commands = _extract_response(ai_response)
-
-        # Self-drain here too -- feedback replies can carry <attach>.
-        thinking, answer, commands = await _run_attach_rounds(
-            provider, loop, thinking, answer, commands,
-            request.chat_id or "default",
-        )
 
         if request.chat_id:
             add_message(request.chat_id, "assistant", answer, thinking, commands)

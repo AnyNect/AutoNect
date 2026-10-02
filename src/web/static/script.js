@@ -1201,6 +1201,12 @@ function createSkillSection(skillCmds, historical) {
                     row.textContent = f.path + '  (' + humanBytes(f.bytes) + ', ' + f.mime + ')';
                     body.appendChild(row);
                 });
+                // Live renders fire the feedback; historical loads do not
+                // (the reply is already in the chat).
+                if (!historical) {
+                    const paths = files.map(f => f.path);
+                    setTimeout(() => sendAttachFeedback(paths, currentChatId), 50);
+                }
             }
             errors.forEach(e => {
                 const row = document.createElement('div');
@@ -1516,6 +1522,32 @@ async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
         }
     } catch (fbError) {
         logger.error('Batch feedback failed', fbError);
+    } finally {
+        pendingFeedback = Math.max(0, pendingFeedback - 1);
+    }
+    })();
+}
+
+async function sendAttachFeedback(files, chatId = null) {
+    // <attach> rides the SAME feedback channel as command output: the
+    // card renders, then the files go to the AI and its reply lands as
+    // a normal next message. No server-side loop, no swallowed message.
+    return (async () => {
+    pendingFeedback++;
+    try {
+        logger.debug('Sending attach feedback', { count: files.length, chatId });
+        const fbResponse = await postFeedbackWithRetry({
+            files: files, chat_id: chatId,
+        });
+        if (fbResponse.ok) {
+            const fbData = await fbResponse.json();
+            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false);
+            logger.info('Attach feedback processed', { commands: fbData.commands?.length || 0 });
+        } else {
+            logger.warn('Attach feedback server error', { status: fbResponse.status });
+        }
+    } catch (fbError) {
+        logger.error('Attach feedback failed', fbError);
     } finally {
         pendingFeedback = Math.max(0, pendingFeedback - 1);
     }
