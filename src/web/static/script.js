@@ -1189,7 +1189,13 @@ function createSkillSection(skillCmds, historical, group = null) {
         body.className = 'skill-body';
 
         if (skill === 'attach') {
-            const files = result.files || [];
+            // The server sends result.paths (raw strings, resolved at
+            // feedback time). Older handlers sent result.files (objects).
+            // Normalise both to {path, bytes, mime} for display + paths[].
+            const rawPaths = result.paths || null;
+            const files = rawPaths
+                ? rawPaths.map(p => ({ path: p, bytes: null, mime: null }))
+                : (result.files || []);
             const errors = result.errors || [];
             if (files.length > 0) {
                 const ok = document.createElement('div');
@@ -1200,7 +1206,10 @@ function createSkillSection(skillCmds, historical, group = null) {
                 files.forEach(f => {
                     const row = document.createElement('div');
                     row.className = 'skill-file';
-                    row.textContent = f.path + '  (' + humanBytes(f.bytes) + ', ' + f.mime + ')';
+                    const meta = (f.bytes != null)
+                        ? '  (' + humanBytes(f.bytes) + ', ' + (f.mime || '?') + ')'
+                        : '';
+                    row.textContent = f.path + meta;
                     body.appendChild(row);
                 });
                 // Live only. If a command group is active in this turn,
