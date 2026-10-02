@@ -916,8 +916,11 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                     const codeEl = preEl.querySelector('code');
                     if (!codeEl) return;
                     const codeText = codeEl.textContent.trim();
-                    // Skip tag blocks -- those are handled below.
+                    // Tag blocks (<command>/<attach>/<kaggle>) are already
+                    // turned into cards from the commands array. Remove the
+                    // raw block so it does not ALSO render as plain text.
                     if (/^<(command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                        preEl.remove();
                         return;
                     }
                     const matchIndex = remainingCommands.findIndex(cmd => (cmd.code || '').trim() === codeText);
