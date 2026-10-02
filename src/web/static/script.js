@@ -880,46 +880,70 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
             if (pre) pre.style.color = '';
         });
         if (commands && commands.length > 0) {
-            logger.debug('Adding command cards', { count: commands.length, historical });
-            const group = {
+            // CRITICAL (2026-10-02 regression): split into shell commands
+            // and other skills. The approval group's total MUST count
+            // ONLY shell commands -- non-command skills never increment
+            // group.completed, so counting them would leave the group
+            // unresolved and the Auto-Allow queue stuck forever.
+            const split = (typeof splitSkills === 'function')
+                ? splitSkills(commands)
+                : { commandSkills: commands, otherSkills: [] };
+            const commandSkills = split.commandSkills;
+            const otherSkills = split.otherSkills;
+            logger.debug('Adding command cards', {
                 total: commands.length,
-                completed: 0,
-                outputs: [],
-                resolved: false,
-                onComplete: null,
-                chat_id: currentChatId,
-                historical: historical
-            };
-            // Only live renders should own the active group. Historical
-            // renders (loading a past chat) must not clobber the state
-            // used by executeTask to decide whether the queue is busy.
-            if (!historical) {
-                activeCommandGroup = group;
-            }
-            let remainingCommands = [...commands];
-            const preBlocks = bubble.querySelectorAll('pre');
-            preBlocks.forEach((preEl) => {
-                const codeEl = preEl.querySelector('code');
-                if (!codeEl) return;
-                const codeText = codeEl.textContent.trim();
-                const isCommandClass = codeEl.className.includes('command') || codeEl.className.includes('language-command');
-                const matchIndex = remainingCommands.findIndex(cmd => cmd.code.trim() === codeText);
-                if (matchIndex !== -1) {
-                    const cmd = remainingCommands[matchIndex];
-                    const cmdSection = createCommandSection([cmd], group);
-                    preEl.parentNode.replaceChild(cmdSection, preEl);
-                    remainingCommands.splice(matchIndex, 1);
-                } else if (isCommandClass && remainingCommands.length > 0) {
-                    const cmd = remainingCommands[0];
-                    const cmdSection = createCommandSection([cmd], group);
-                    preEl.parentNode.replaceChild(cmdSection, preEl);
-                    remainingCommands.shift();
-                }
+                commands: commandSkills.length,
+                otherSkills: otherSkills.length,
+                historical
             });
-            if (remainingCommands.length > 0) {
-                const fallbackSection = createCommandSection(remainingCommands, group);
-                bubble.appendChild(fallbackSection);
-                logger.debug('Added fallback command cards', { count: remainingCommands.length });
+
+            let group = null;
+            if (commandSkills.length > 0) {
+                group = {
+                    total: commandSkills.length,
+                    completed: 0,
+                    outputs: [],
+                    resolved: false,
+                    onComplete: null,
+                    attachPaths: [],
+                    chat_id: currentChatId,
+                    historical: historical
+                };
+                if (!historical) {
+                    activeCommandGroup = group;
+                }
+                const remainingCommands = [...commandSkills];
+                const preBlocks = bubble.querySelectorAll('pre');
+                preBlocks.forEach((preEl) => {
+                    const codeEl = preEl.querySelector('code');
+                    if (!codeEl) return;
+                    const codeText = codeEl.textContent.trim();
+                    // Tag blocks (<command>/<attach>/<kaggle>) are already
+                    // turned into cards from the commands array. Remove the
+                    // raw block so it does not ALSO render as plain text.
+                    if (/^<(command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                        preEl.remove();
+                        return;
+                    }
+                    const matchIndex = remainingCommands.findIndex(cmd => (cmd.code || '').trim() === codeText);
+                    if (matchIndex !== -1) {
+                        const cmd = remainingCommands[matchIndex];
+                        const cmdSection = createCommandSection([cmd], group);
+                        preEl.parentNode.replaceChild(cmdSection, preEl);
+                        remainingCommands.splice(matchIndex, 1);
+                    }
+                });
+                if (remainingCommands.length > 0) {
+                    const fallbackSection = createCommandSection(remainingCommands, group);
+                    bubble.appendChild(fallbackSection);
+                    logger.debug('Added fallback command cards', { count: remainingCommands.length });
+                }
+            }
+
+            if (otherSkills.length > 0) {
+                const skillSection = createSkillSection(otherSkills, historical, group);
+                bubble.appendChild(skillSection);
+                logger.debug('Added skill cards', { count: otherSkills.length });
             }
         }
     } else {
@@ -1137,6 +1161,108 @@ function toggleDictation() {
     }).catch((err) => {
         logger.warn('Microphone permission failed', { err: String(err) });
     });
+}
+
+/* ── Skill cards (attach, kaggle, ...) ────────────────────────────
+   Non-command skills run server-side before the answer reaches the UI.
+   cmd.result holds the handler's return value. These cards are
+   informational -- they never enter the approval group, so they cannot
+   affect the Auto-Allow queue. */
+function createSkillSection(skillCmds, historical, group = null) {
+    const section = document.createElement('div');
+    section.className = 'skill-section';
+    skillCmds.forEach((cmd) => {
+        const skill = (cmd && cmd.skill) || 'skill';
+        const result = (cmd && cmd.result) || {};
+        const card = document.createElement('div');
+        card.className = 'skill-card';
+        card.dataset.skill = skill;
+
+        const header = document.createElement('div');
+        header.className = 'skill-header';
+        header.innerHTML =
+            '<span class="skill-badge">' + escapeHtml(skill) + '</span>' +
+            '<span class="skill-title">' + escapeHtml(skillTitle(skill)) + '</span>';
+        card.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'skill-body';
+
+        if (skill === 'attach') {
+            // The server sends result.paths (raw strings, resolved at
+            // feedback time). Older handlers sent result.files (objects).
+            // Normalise both to {path, bytes, mime} for display + paths[].
+            const rawPaths = result.paths || null;
+            const files = rawPaths
+                ? rawPaths.map(p => ({ path: p, bytes: null, mime: null }))
+                : (result.files || []);
+            const errors = result.errors || [];
+            if (files.length > 0) {
+                const ok = document.createElement('div');
+                ok.className = 'skill-ok';
+                ok.textContent = files.length + ' file' + (files.length === 1 ? '' : 's') +
+                    ' attached to the AI';
+                body.appendChild(ok);
+                files.forEach(f => {
+                    const row = document.createElement('div');
+                    row.className = 'skill-file';
+                    const meta = (f.bytes != null)
+                        ? '  (' + humanBytes(f.bytes) + ', ' + (f.mime || '?') + ')'
+                        : '';
+                    row.textContent = f.path + meta;
+                    body.appendChild(row);
+                });
+                // Live only. If a command group is active in this turn,
+                // stash the paths on the group so they ride the SAME
+                // feedback POST as the command output (resolved after the
+                // commands ran). Otherwise fire standalone.
+                if (!historical) {
+                    const paths = files.map(f => f.path);
+                    if (group) {
+                        group.attachPaths = (group.attachPaths || []).concat(paths);
+                    } else {
+                        setTimeout(() => sendAttachFeedback(paths, currentChatId), 50);
+                    }
+                }
+            }
+            errors.forEach(e => {
+                const row = document.createElement('div');
+                row.className = 'skill-err';
+                row.textContent = e.path + ' \u2014 ' + e.reason;
+                body.appendChild(row);
+            });
+        } else {
+            const pre = document.createElement('pre');
+            pre.className = 'skill-code';
+            const code = document.createElement('code');
+            code.textContent = (cmd && cmd.code) || '';
+            pre.appendChild(code);
+            body.appendChild(pre);
+            const res = document.createElement('div');
+            res.className = 'skill-result';
+            res.textContent = JSON.stringify(result);
+            body.appendChild(res);
+        }
+
+        card.appendChild(body);
+        section.appendChild(card);
+    });
+    return section;
+}
+
+function skillTitle(skill) {
+    switch (skill) {
+        case 'attach': return 'Files sent to AI';
+        case 'kaggle': return 'Kaggle';
+        default: return skill;
+    }
+}
+
+function humanBytes(n) {
+    if (!n && n !== 0) return '?';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 function createCommandSection(commands, group = null) {
@@ -1396,13 +1522,14 @@ async function forwardRestartReport(content) {
     }
 }
 
-async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
+async function sendBatchFeedback(outputs, chatId = null, outputId = null, files = null) {
     return (async () => {
     pendingFeedback++;
     try {
-        logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId });
+        logger.debug('Sending batch feedback', { count: outputs.length, chatId, outputId, files: files ? files.length : 0 });
         const fbResponse = await postFeedbackWithRetry({
             commands: outputs, chat_id: chatId, output_id: outputId,
+            files: files || [],
         });
         if (fbResponse.ok) {
             const fbData = await fbResponse.json();
@@ -1413,6 +1540,32 @@ async function sendBatchFeedback(outputs, chatId = null, outputId = null) {
         }
     } catch (fbError) {
         logger.error('Batch feedback failed', fbError);
+    } finally {
+        pendingFeedback = Math.max(0, pendingFeedback - 1);
+    }
+    })();
+}
+
+async function sendAttachFeedback(files, chatId = null) {
+    // <attach> rides the SAME feedback channel as command output: the
+    // card renders, then the files go to the AI and its reply lands as
+    // a normal next message. No server-side loop, no swallowed message.
+    return (async () => {
+    pendingFeedback++;
+    try {
+        logger.debug('Sending attach feedback', { count: files.length, chatId });
+        const fbResponse = await postFeedbackWithRetry({
+            files: files, chat_id: chatId,
+        });
+        if (fbResponse.ok) {
+            const fbData = await fbResponse.json();
+            if (fbData.answer) addMessage('assistant', fbData.answer, fbData.thinking, fbData.commands || [], false);
+            logger.info('Attach feedback processed', { commands: fbData.commands?.length || 0 });
+        } else {
+            logger.warn('Attach feedback server error', { status: fbResponse.status });
+        }
+    } catch (fbError) {
+        logger.error('Attach feedback failed', fbError);
     } finally {
         pendingFeedback = Math.max(0, pendingFeedback - 1);
     }
@@ -1458,7 +1611,7 @@ function handleDecline(card) {
             activeCommandGroup = null;
             // Await the feedback: its reply may spawn a new command group,
             // and draining the queue before it lands is the issue #7 race.
-            feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id);
+            feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, null, group.attachPaths);
             batchDone = true;
         }
     } else {
@@ -1717,7 +1870,7 @@ async function handleAllow(card, onComplete = null) {
             if (group.completed === group.total && !group.resolved) {
                 group.resolved = true;
                 activeCommandGroup = null;
-                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, outputId);
+                feedbackPromise = sendBatchFeedback(group.outputs, group.chat_id, outputId, group.attachPaths);
                 batchDone = true;
             }
         } else {
