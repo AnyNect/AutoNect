@@ -39,3 +39,19 @@ def test_quoted_apostrophe_passes():
 def test_empty_is_clean():
     assert check_bash_syntax("") == ""
     assert check_bash_syntax("   \n  ") == ""
+
+def test_truncated_heredoc_fails():
+    # bash -n exits 0 but warns "here-document delimited by end-of-file".
+    # Checking only the return code let this through, and the PTY then
+    # hung waiting for a terminator that never came (2026-10-03).
+    err = check_bash_syntax("cat <<'ZZ'\nhello\n")
+    assert err, "truncated heredoc must be invalid"
+    assert "here-document" in err or "end-of-file" in err
+
+def test_python_heredoc_truncated_fails():
+    err = check_bash_syntax("python3 - <<'PY'\nimport sys\n")
+    assert err, "truncated python heredoc must be invalid"
+
+def test_complete_heredoc_passes():
+    assert check_bash_syntax("cat <<'A'\nhi\nA") == ""
+    assert check_bash_syntax("python3 - <<'PY'\nprint(1)\nPY") == ""

@@ -33,6 +33,13 @@ def check_bash_syntax(code: str) -> str:
         # Fail open: a missing or broken bash must not block everything.
         logger.warning("bash -n could not run: %s", e)
         return ""
-    if proc.returncode == 0:
+    # Treat EITHER signal as a failure. A truncated heredoc (an
+    # unterminated <<EOF) makes bash -n exit 0 while still writing
+    # "warning: here-document ... delimited by end-of-file" to stderr;
+    # an unterminated quote or dangling pipe gives rc!=0. Checking only
+    # rc let the truncated heredoc through -- which then hung the PTY
+    # waiting for a terminator that never came (2026-10-03).
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode == 0 and not stderr:
         return ""
-    return (proc.stderr or proc.stdout or "bash: syntax error").strip()
+    return stderr or (proc.stdout or "bash: syntax error").strip()
