@@ -1414,6 +1414,15 @@ function createCommandSection(commands, group = null) {
 
         const safety = cmd.safety || 'allow';
         const tag = getCommandSafetyTag(safety);
+        // Why a decline happened, so the feedback is not all
+        // 'Declined by user'. The server ships safety_reason (the
+        // bash parse error for 'invalid', the guard reason for
+        // 'deny'); manual clicks keep the plain default.
+        card._declineReason = (safety === 'invalid')
+            ? ('Blocked: invalid shell syntax -- ' + (cmd.safety_reason || 'parse error'))
+            : (safety === 'deny')
+            ? ('Blocked: unsafe command -- ' + (cmd.safety_reason || 'security policy'))
+            : 'Declined by user';
         const tagHtml = `<span class="cmd-tag ${tag.class}">${tag.text}</span>`;
 
         const pre = document.createElement('pre');
@@ -1465,10 +1474,10 @@ function createCommandSection(commands, group = null) {
             if (safety === 'invalid') {
                 // Parse failure: the shell can never run this. Decline
                 // immediately, never queue, whatever Auto-Allow says.
-                setTimeout(() => handleDecline(card), 100);
+                setTimeout(() => handleDecline(card, card._declineReason), 100);
                 logger.debug('Auto-decline triggered for unparseable command', { command: commandCode.substring(0, 30) });
             } else if (safety === 'deny') {
-                setTimeout(() => handleDecline(card), 100);
+                setTimeout(() => handleDecline(card, card._declineReason), 100);
                 logger.debug('Auto-deny triggered for unsafe command', { command: commandCode.substring(0, 30) });
             } else if (safety === 'warn') {
                 let countdown = 5;
@@ -1704,7 +1713,7 @@ async function sendAttachFeedback(files, chatId = null) {
     })();
 }
 
-function handleDecline(card) {
+function handleDecline(card, reason) {
     let feedbackPromise = Promise.resolve();
     if (card._autoAllowTimer) {
         clearInterval(card._autoAllowTimer);
@@ -1736,7 +1745,7 @@ function handleDecline(card) {
     let batchDone = false;
     if (card._group) {
         const group = card._group;
-        group.outputs.push({ command: commandStr, stdout: '', stderr: 'Declined by user', exit_code: -1 });
+        group.outputs.push({ command: commandStr, stdout: '', stderr: reason || card._declineReason || 'Declined by user', exit_code: -1 });
         group.completed++;
         if (group.completed === group.total && !group.resolved) {
             group.resolved = true;
