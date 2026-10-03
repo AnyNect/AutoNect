@@ -20,10 +20,15 @@ def test_empty_payload_errors():
     assert r["ok"] is False
     assert "empty" in r["error"].lower()
 
-def test_missing_credentials_is_a_clean_error_not_a_raise():
-    r = kaggle.handle("kernels list", {})
-    assert r["ok"] is False
-    assert isinstance(r["error"], str)
+def test_handler_never_raises_on_a_real_command():
+    # State-independent: whether or not credentials exist, the handler
+    # must return a structured dict, never raise. (An earlier version
+    # asserted ok is False, which only held on an unauthenticated box.)
+    r = kaggle.handle("kernels list -m", {})
+    assert isinstance(r, dict)
+    assert "ok" in r
+    if not r["ok"]:
+        assert isinstance(r.get("error"), str)
 
 def test_bad_quoting_is_caught():
     r = kaggle.handle("kernels list 'unterminated", {})
@@ -93,3 +98,38 @@ def test_dispatcher_routes_queued_kaggle_to_a_running_job():
     assert len(q) == 1, commands
     assert q[0]["result"].get("status") == "running"
     queue_runner.drain_injections()
+
+# ── kernel log flattening ───────────────────────────────────────────
+
+def test_flatten_handles_the_real_json_array_shape():
+    # The CLI writes ONE JSON array (pretty-printed), not JSON-lines.
+    raw = ('[{"stream_name":"stdout","time":0.6,"data":"hello\\n"}\n'
+           ',{"stream_name":"stderr","time":1.0,"data":"oops\\n"}\n'
+           ']')
+    txt = kaggle.flatten_kernel_log(raw)
+    assert "hello" in txt
+    assert "[stderr] oops" in txt
+    assert "stream_name" not in txt
+
+def test_flatten_handles_json_lines_too():
+    raw = ('{"stream_name":"stdout","data":"a\\n"}\n'
+           '{"stream_name":"stdout","data":"b\\n"}\n')
+    txt = kaggle.flatten_kernel_log(raw)
+    assert txt == "a\nb"
+
+def test_flatten_passes_through_unparseable_lines():
+    raw = "not json at all\n"
+    assert "not json at all" in kaggle.flatten_kernel_log(raw)
+
+def test_flatten_truncates_from_the_tail():
+    raw = '[' + ",".join(
+        '{"stream_name":"stdout","data":"line%d\\n"}' % i
+        for i in range(2000)) + ']'
+    txt = kaggle.flatten_kernel_log(raw, max_chars=200)
+    assert "truncated" in txt
+    assert "line1999" in txt
+
+def test_read_kernel_log_missing_file_is_clean_error():
+    r = kaggle.read_kernel_log("/nonexistent/path.log")
+    assert r["ok"] is False
+    assert isinstance(r["error"], str)
