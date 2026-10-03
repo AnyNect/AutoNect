@@ -827,7 +827,9 @@ async def queue_flush(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    chat_id = (body or {}).get("chat_id")
+    chat_id = (body or {}).get("chat_id") or _current_chat_id
+    logger.info("queue-flush: chat_id=%s (body=%s, current=%s)",
+                chat_id, (body or {}).get("chat_id"), _current_chat_id)
 
     if _queue_runner.pending_count() == 0:
         return {"flushed": False}
