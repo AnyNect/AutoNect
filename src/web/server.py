@@ -29,6 +29,7 @@ from src.skills import get_handler as _get_skill_handler
 from src.skills import queue_runner as _queue_runner
 from src.skills import kaggle as _kaggle
 from src.security import CommandGuard
+from src.security.syntax import check_bash_syntax
 from src.core.config import config
 from src.database import upsert_chat, add_message, get_chat_list, get_chat, get_chat_by_url, update_chat, delete_chat, update_chat_name, chat_exists
 
@@ -427,6 +428,17 @@ def build_wrapped_commands_output(commands: list[dict]) -> str:
 def _annotate_commands_with_safety(commands: list[dict], session_id: str = "default") -> list[dict]:
     annotated = []
     for cmd in commands:
+        # Syntax gate first. A shell command that does not parse can
+        # never run, whatever the guard would say about its danger. Only
+        # the "command" skill is handed to bash as a script; attach and
+        # kaggle carry payloads, not shell lines.
+        if cmd.get("skill", "command") == "command":
+            syntax_err = check_bash_syntax(cmd["code"])
+            if syntax_err:
+                cmd["safety"] = "invalid"
+                cmd["safety_reason"] = syntax_err
+                annotated.append(cmd)
+                continue
         decision, info = guard.evaluate(cmd["code"], session_id)
         if decision == "ask":
             safety = "warn"

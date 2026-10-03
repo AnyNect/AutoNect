@@ -1120,6 +1120,7 @@ function updateHeaderTitleSmooth(titleElem, newText, isCommand) {
 
 function getCommandSafetyTag(safety) {
     switch (safety) {
+        case 'invalid': return { text: 'INVALID', class: 'cmd-tag-invalid' };
         case 'deny': return { text: 'UNSAFE', class: 'cmd-tag-unsafe' };
         case 'warn': return { text: 'UNSURE', class: 'cmd-tag-unsure' };
         case 'allow':
@@ -1461,7 +1462,12 @@ function createCommandSection(commands, group = null) {
         terminalBtn.onclick = (e) => { e.stopPropagation(); openNativeTerminal(commandCode); };
 
         if (autoAllowEnabled && !group.historical) {
-            if (safety === 'deny') {
+            if (safety === 'invalid') {
+                // Parse failure: the shell can never run this. Decline
+                // immediately, never queue, whatever Auto-Allow says.
+                setTimeout(() => handleDecline(card), 100);
+                logger.debug('Auto-decline triggered for unparseable command', { command: commandCode.substring(0, 30) });
+            } else if (safety === 'deny') {
                 setTimeout(() => handleDecline(card), 100);
                 logger.debug('Auto-deny triggered for unsafe command', { command: commandCode.substring(0, 30) });
             } else if (safety === 'warn') {
