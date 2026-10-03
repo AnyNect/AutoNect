@@ -1507,6 +1507,9 @@ def _on_queue_job_done(job: dict) -> None:
     idle predicate -- the PTY command state lives in the browser.
     """
     loop = _event_loop
+    subs = len(_event_subscribers)
+    logger.info("queue-job-done callback: job=%s subs=%d loop=%s",
+                job.get("job_id"), subs, "set" if loop else "None")
     if loop is None:
         return
     payload = {
@@ -1518,7 +1521,7 @@ def _on_queue_job_done(job: dict) -> None:
     try:
         asyncio.run_coroutine_threadsafe(_broadcast_event(payload), loop)
     except Exception as e:
-        logger.debug("queue-job-done broadcast failed: %s", e)
+        logger.warning("queue-job-done broadcast failed: %s", e)
 
 
 async def _broadcast_event(payload: dict):
