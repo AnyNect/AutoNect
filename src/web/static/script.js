@@ -745,11 +745,19 @@ async function maybeFlushQueueInjections() {
     try {
         isProcessing = true;
         logger.info('Flushing pending background-job output (idle)');
-        const resp = await fetch('/api/queue-flush', { method: 'POST' });
+        const resp = await fetch('/api/queue-flush', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: currentChatId }),
+        });
         if (resp && resp.ok) {
             const data = await resp.json();
-            if (data.flushed && data.answer) {
-                addMessage('assistant', data.answer, data.thinking || '',
+            const hasCmds = !!(data.commands && data.commands.length);
+            if (data.flushed && (data.answer || hasCmds)) {
+                // Render whenever there is a reply OR a command -- a
+                // command-only answer has an empty .answer and would
+                // otherwise render nothing (seen 2026-10-03).
+                addMessage('assistant', data.answer || '', data.thinking || '',
                            data.commands || [], false);
             } else if (!data.flushed) {
                 logger.debug('queue flush: server had nothing pending');

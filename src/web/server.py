@@ -814,7 +814,7 @@ async def ai_feedback(request: AIFeedbackRequest):
 
 
 @app.post("/api/queue-flush")
-async def queue_flush():
+async def queue_flush(request: Request):
     """Fire a turn whose ONLY payload is pending background-job output.
 
     The UI calls this when it goes idle and a queue* job has finished
@@ -823,6 +823,12 @@ async def queue_flush():
     prompt + the block, and return the reply so the UI renders it
     like any other assistant turn. On failure the block is requeued.
     """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    chat_id = (body or {}).get("chat_id")
+
     if _queue_runner.pending_count() == 0:
         return {"flushed": False}
     if not provider:
@@ -845,7 +851,11 @@ async def queue_flush():
     try:
         ai_response = await loop.run_in_executor(_provider_executor, send_and_get)
         thinking, answer, commands = _extract_response(ai_response)
-        logger.info("Queue flush turn complete, commands=%d", len(commands))
+        logger.info("Queue flush turn complete, commands=%d, answer_len=%d",
+                    len(commands), len(answer or ""))
+        if chat_id:
+            add_message(chat_id, "assistant", answer, thinking, commands)
+            logger.info("Stored flush response for chat %s", chat_id)
         return {"flushed": True, "thinking": thinking,
                 "answer": answer, "commands": commands}
     except Exception as e:
