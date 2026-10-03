@@ -30,6 +30,20 @@ _jobs_lock = threading.Lock()
 _pending: List[str] = []
 _pending_lock = threading.Lock()
 
+# Optional completion callback, set by server.py. Fired from the
+# watcher thread the moment a job's block is queued, so the UI can
+# be told "a job finished" and decide on its own whether it is idle.
+_on_complete = None
+_on_complete_lock = threading.Lock()
+
+
+def set_on_complete(cb):
+    """Register a callback invoked (from the watcher thread) with the
+    finished job's dict. Used to push a queue-job-done event."""
+    global _on_complete
+    with _on_complete_lock:
+        _on_complete = cb
+
 def _now() -> float:
     return time.time()
 
@@ -87,6 +101,13 @@ def _watcher(job_id: str) -> None:
         block = _format_injection(job)
     with _pending_lock:
         _pending.append(block)
+    with _on_complete_lock:
+        cb = _on_complete
+    if cb is not None:
+        try:
+            cb(dict(job))
+        except Exception:
+            pass
 
 def launch(code: str, ctx: Optional[dict] = None) -> dict:
     """Launch ``code`` as a background shell command.  Returns job metadata."""
@@ -161,6 +182,15 @@ def drain_injections() -> str:
         blocks = list(_pending)
         _pending.clear()
     return "\n\n".join(blocks)
+
+def requeue_injections(block: str) -> None:
+    """Put a drained block back at the front (used when a flush
+    fails, so the output is not lost)."""
+    if not block:
+        return
+    with _pending_lock:
+        _pending.insert(0, block)
+
 
 def pending_count() -> int:
     with _pending_lock:

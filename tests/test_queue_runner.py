@@ -75,3 +75,41 @@ def test_nonzero_exit_code_survives_to_the_block():
 
 def test_unknown_job_id_returns_none():
     assert queue_runner.status("nope") is None
+
+# ── idle-flush support ─────────────────────────────────────────────
+
+def test_requeue_puts_block_back_at_the_front():
+    # drain once, requeue, drain again returns the same block
+    r = queue_runner.launch("echo requeue-probe")
+    st = _wait_done(r["job_id"])
+    assert st and st["done"]
+    block = queue_runner.drain_injections()
+    assert "requeue-probe" in block
+    assert queue_runner.drain_injections() == ""
+    queue_runner.requeue_injections(block)
+    assert queue_runner.pending_count() == 1
+    again = queue_runner.drain_injections()
+    assert again == block
+
+def test_requeue_ignores_empty():
+    before = queue_runner.pending_count()
+    queue_runner.requeue_injections("")
+    assert queue_runner.pending_count() == before
+
+def test_on_complete_callback_fires():
+    got = []
+    queue_runner.set_on_complete(lambda job: got.append(job.get("job_id")))
+    try:
+        r = queue_runner.launch("echo cb-probe")
+        st = _wait_done(r["job_id"])
+        assert st and st["done"]
+        # callback runs on the watcher thread just before/after the
+        # block is queued; give it a moment
+        for _ in range(40):
+            if got:
+                break
+            time.sleep(0.05)
+        assert r["job_id"] in got
+    finally:
+        queue_runner.set_on_complete(None)
+        queue_runner.drain_injections()

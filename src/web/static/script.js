@@ -717,7 +717,68 @@ function shouldQueueMessage() {
     return false;
 }
 
+/* ── Background-job idle flush ──────────────────────────────────
+   A finished queue* job appends its block to the server's pending
+   buffer. Normally the block rides the NEXT message. But if the app
+   goes idle -- no user message, no command running, nothing queued --
+   nobody sends that next message, and the block would sit forever.
+   When the server broadcasts queue-job-done, the UI decides for
+   itself whether it is idle and, if so, fires a turn to flush.
+   Idle is a frontend truth: the PTY command state lives here. */
+let _queueFlushPending = false;
+let _queueFlushInFlight = false;
+
+function isAppIdleForFlush() {
+    if (isProcessing) return false;
+    if (isPaused) return false;
+    if (taskQueue.length > 0) return false;
+    if (autoAllowEnabled && hasPendingCommandWork()) return false;
+    return true;
+}
+
+async function maybeFlushQueueInjections() {
+    if (!_queueFlushPending) return;
+    if (_queueFlushInFlight) return;
+    if (!isAppIdleForFlush()) return;
+    _queueFlushPending = false;
+    _queueFlushInFlight = true;
+    try {
+        isProcessing = true;
+        logger.info('Flushing pending background-job output (idle)');
+        const resp = await fetch('/api/queue-flush', { method: 'POST' });
+        if (resp && resp.ok) {
+            const data = await resp.json();
+            if (data.flushed && data.answer) {
+                addMessage('assistant', data.answer, data.thinking || '',
+                           data.commands || [], false);
+            } else if (!data.flushed) {
+                logger.debug('queue flush: server had nothing pending');
+            }
+        }
+    } catch (e) {
+        logger.warn('queue flush failed', e);
+        _queueFlushPending = true;   // retry on the next idle signal
+    } finally {
+        _queueFlushInFlight = false;
+        // Mirror executeTask: if the AI's reply to the job output
+        // spawned a command group, stay busy until it resolves.
+        const hasPendingCommands = activeCommandGroup && !activeCommandGroup.resolved;
+        if (!hasPendingCommands) {
+            isProcessing = false;
+            sendBtn.disabled = !promptInput.value.trim();
+            processNextQueueTask();
+        } else {
+            logger.debug('queue flush done, command group pending — keeping busy');
+        }
+    }
+}
+
 function processNextQueueTask() {
+    _processNextQueueTaskInner();
+    maybeFlushQueueInjections();
+}
+
+function _processNextQueueTaskInner() {
     // Do not drain the queue if the app is still busy. This guards against
     // any handler that mistakenly calls us mid-flight.
     if (isProcessing) {
@@ -1536,6 +1597,10 @@ function connectEventSocket() {
         try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.type === 'restart-report' && m.content) {
             forwardRestartReport(m.content);
+        } else if (m.type === 'queue-job-done') {
+            _queueFlushPending = true;
+            logger.info('Background job finished; will flush when idle', m);
+            maybeFlushQueueInjections();
         }
     };
     ws.onclose = () => {

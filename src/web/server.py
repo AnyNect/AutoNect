@@ -292,6 +292,9 @@ async def lifespan(app: FastAPI):
     global provider
     logger.info("Starting application lifespan")
     loop = asyncio.get_running_loop()
+    global _event_loop
+    _event_loop = loop
+    _queue_runner.set_on_complete(_on_queue_job_done)
     # Best-effort: bring up the local STT service so the mic works.
     try:
         _maybe_start_stt()
@@ -807,6 +810,47 @@ async def ai_feedback(request: AIFeedbackRequest):
         )
     except Exception as e:
         logger.exception("Error during AI feedback processing")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/queue-flush")
+async def queue_flush():
+    """Fire a turn whose ONLY payload is pending background-job output.
+
+    The UI calls this when it goes idle and a queue* job has finished
+    but no message is coming to carry the block. Server-side:
+    if nothing is pending, no-op; otherwise drain, send a minimal
+    prompt + the block, and return the reply so the UI renders it
+    like any other assistant turn. On failure the block is requeued.
+    """
+    if _queue_runner.pending_count() == 0:
+        return {"flushed": False}
+    if not provider:
+        return JSONResponse(status_code=500, content={"error": "Provider not initialized"})
+
+    block = _queue_runner.drain_injections()
+    if not block:
+        return {"flushed": False}
+
+    loop = asyncio.get_running_loop()
+
+    def send_and_get():
+        provider.send_prompt(
+            "A background job you launched has finished. "
+            "Its output is below -- react to it as you normally would.\n\n"
+            + block
+        )
+        return provider.get_response()
+
+    try:
+        ai_response = await loop.run_in_executor(_provider_executor, send_and_get)
+        thinking, answer, commands = _extract_response(ai_response)
+        logger.info("Queue flush turn complete, commands=%d", len(commands))
+        return {"flushed": True, "thinking": thinking,
+                "answer": answer, "commands": commands}
+    except Exception as e:
+        logger.exception("Queue flush failed; requeueing block")
+        _queue_runner.requeue_injections(block)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
@@ -1448,6 +1492,33 @@ STT_UPSTREAM = os.environ.get("AUTONECT_STT_UPSTREAM", "ws://127.0.0.1:6012/ws/s
 # reconnecting right after a restart.
 _event_subscribers: set = set()
 _pending_restart_report: Optional[str] = None
+
+# The running event loop, captured in lifespan. The queue_runner
+# completion callback fires from a plain thread and needs this to
+# schedule an async broadcast.
+_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _on_queue_job_done(job: dict) -> None:
+    """queue_runner completion callback (runs on the watcher thread).
+
+    Push a queue-job-done event so the UI can decide, on its own, that
+    it is idle and fire a turn to flush the block. The UI owns the
+    idle predicate -- the PTY command state lives in the browser.
+    """
+    loop = _event_loop
+    if loop is None:
+        return
+    payload = {
+        "type": "queue-job-done",
+        "job_id": job.get("job_id"),
+        "exit_code": job.get("exit_code"),
+        "runtime_s": job.get("runtime_s"),
+    }
+    try:
+        asyncio.run_coroutine_threadsafe(_broadcast_event(payload), loop)
+    except Exception as e:
+        logger.debug("queue-job-done broadcast failed: %s", e)
 
 
 async def _broadcast_event(payload: dict):
