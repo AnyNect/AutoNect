@@ -437,6 +437,20 @@ def _annotate_commands_with_safety(commands: list[dict], session_id: str = "defa
     return annotated
 
 
+def _queued_skill_command(skill: str, code: str):
+    """Map a queued non-command skill to a shell line queue_runner can run.
+
+    queue_runner spawns bash, so a queued kaggle becomes a kaggle CLI
+    invocation. Returns None when the skill has no background form.
+    """
+    if skill == "kaggle":
+        exe = _kaggle.kaggle_bin()
+        if not exe:
+            return None
+        return f"{exe} {code}"
+    return None
+
+
 def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
     """Run non-command skills (attach, kaggle, ...) through their handlers.
 
@@ -464,6 +478,24 @@ def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
                 out.append(entry)
                 continue
             out.append(cmd); continue
+        if cmd.get("queued"):
+            # A queued non-command skill (queuekaggle, ...) runs in the
+            # background too. For kaggle we wrap the CLI invocation as a
+            # shell line so queue_runner (which spawns bash) can run it.
+            line = _queued_skill_command(skill, cmd["code"])
+            if line is None:
+                logger.warning("queued skill %r has no runner -- dropping", skill)
+                continue
+            try:
+                result = _queue_runner.launch(line, {"session_id": session_id})
+            except Exception as e:
+                logger.exception("queued skill launch failed")
+                result = {"error": str(e)}
+            entry = dict(cmd)
+            entry["skill"] = "queue"
+            entry["result"] = result
+            out.append(entry)
+            continue
         if skill == "attach":
             # Resolution happens at FEEDBACK time (after commands ran),
             # so files a command creates exist by then. Store the raw
