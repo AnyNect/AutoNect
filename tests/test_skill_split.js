@@ -56,5 +56,24 @@ t('kaggle is a non-command skill', function () {
     assert.strictEqual(otherSkills.length, 1);
 });
 
+t('queue (background job) is a non-command skill', function () {
+    // A queued command is normalised to skill: 'queue' server-side
+    // and must NOT count toward the approval group total.
+    const { commandSkills, otherSkills } = splitSkills([
+        { skill: 'queue', code: 'python train.py', queued: true },
+    ]);
+    assert.strictEqual(commandSkills.length, 0);
+    assert.strictEqual(otherSkills.length, 1);
+});
+
+t('command + queue: group counts only the command', function () {
+    const { commandSkills, otherSkills } = splitSkills([
+        { skill: 'command', code: 'ls' },
+        { skill: 'queue',   code: 'train.py', queued: true },
+    ]);
+    assert.strictEqual(commandSkills.length, 1);
+    assert.strictEqual(otherSkills.length, 1);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

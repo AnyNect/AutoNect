@@ -917,7 +917,7 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                 const codeEl = preEl.querySelector('code');
                 if (!codeEl) return;
                 const codeText = codeEl.textContent.trim();
-                if (/^<(command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
                     preEl.remove();
                 }
             });
@@ -946,7 +946,7 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                     // Tag blocks (<command>/<attach>/<kaggle>) are already
                     // turned into cards from the commands array. Remove the
                     // raw block so it does not ALSO render as plain text.
-                    if (/^<(command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                    if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
                         preEl.remove();
                         return;
                     }
@@ -1213,7 +1213,28 @@ function createSkillSection(skillCmds, historical, group = null) {
         const body = document.createElement('div');
         body.className = 'skill-body';
 
-        if (skill === 'attach') {
+        if (skill === 'queue') {
+            const res = (cmd && cmd.result) || {};
+            const ok = document.createElement('div');
+            ok.className = 'skill-ok';
+            if (res.error) {
+                ok.textContent = 'launch failed: ' + res.error;
+            } else {
+                ok.textContent = 'running in background (job ' +
+                    (res.job_id || '?') + ', pid ' + (res.pid || '?') + ')';
+            }
+            body.appendChild(ok);
+            const pre = document.createElement('pre');
+            pre.className = 'skill-code';
+            const code = document.createElement('code');
+            code.textContent = (cmd && cmd.code) || '';
+            pre.appendChild(code);
+            body.appendChild(pre);
+            const note = document.createElement('div');
+            note.className = 'skill-result';
+            note.textContent = 'Output will ride the next message.';
+            body.appendChild(note);
+        } else if (skill === 'attach') {
             // The server sends result.paths (raw strings, resolved at
             // feedback time). Older handlers sent result.files (objects).
             // Normalise both to {path, bytes, mime} for display + paths[].
@@ -1279,6 +1300,7 @@ function skillTitle(skill) {
     switch (skill) {
         case 'attach': return 'Files sent to AI';
         case 'kaggle': return 'Kaggle';
+        case 'queue': return 'Background job';
         default: return skill;
     }
 }

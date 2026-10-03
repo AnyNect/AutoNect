@@ -26,6 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.skills import get_handler as _get_skill_handler
+from src.skills import queue_runner as _queue_runner
 from src.security import CommandGuard
 from src.core.config import config
 from src.database import upsert_chat, add_message, get_chat_list, get_chat, get_chat_by_url, update_chat, delete_chat, update_chat_name, chat_exists
@@ -444,6 +445,21 @@ def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
     for cmd in commands:
         skill = cmd.get("skill", "command")
         if skill == "command":
+            if cmd.get("queued"):
+                # Background job: launch server-side, never the PTY.
+                # Approval is deliberately skipped for v1 -- the
+                # launch is still gated by the agent emitting the tag.
+                try:
+                    result = _queue_runner.launch(cmd["code"],
+                                                  {"session_id": session_id})
+                except Exception as e:
+                    logger.exception("queue launch failed")
+                    result = {"error": str(e)}
+                entry = dict(cmd)
+                entry["skill"] = "queue"
+                entry["result"] = result
+                out.append(entry)
+                continue
             out.append(cmd); continue
         if skill == "attach":
             # Resolution happens at FEEDBACK time (after commands ran),
@@ -537,6 +553,14 @@ async def chat(request: ChatRequest):
     else:
         full_prompt = request.prompt
         logger.debug("Existing session: %s", request.session_id)
+
+    # Append any finished background-job blocks to the outbound prompt.
+    # Appended, not prepended -- the block rides the tail of whatever
+    # message is next (user, feedback, or skill output).
+    injected = _queue_runner.drain_injections()
+    if injected:
+        full_prompt = full_prompt + "\n\n" + injected
+        logger.info("Injected %d bytes of background-job output", len(injected))
 
     def send_and_get():
         # If the assembled prompt exceeds the output-file threshold, attach
@@ -637,6 +661,11 @@ async def ai_feedback(request: AIFeedbackRequest):
     loop = asyncio.get_running_loop()
 
     def send_wrapped_and_get():
+        # A finished background job rides this feedback turn too.
+        queued_block = _queue_runner.drain_injections()
+        if queued_block:
+            logger.info("Feedback: injecting %d bytes of background-job output",
+                        len(queued_block))
         # Resolve <attach> files at FEEDBACK time -- after the commands
         # ran, so files a command just created now exist. Re-validate
         # through the attach handler so the allowlist still applies.
@@ -664,6 +693,7 @@ async def ai_feedback(request: AIFeedbackRequest):
                 "The files you requested are attached. "
                 "Read them and continue with the task.\n"
                 "[/ATTACHED FILES]"
+                + ("\n\n" + queued_block if queued_block else "")
             )
             return provider.get_response()
 
@@ -731,6 +761,7 @@ async def ai_feedback(request: AIFeedbackRequest):
 
                 provider.send_prompt(
                     f"[SYSTEM_COMMAND_OUTPUT]\nCommand: {command_display or 'unknown'}\nThe output is attached as a file.\n[/SYSTEM_COMMAND_OUTPUT]" + attach_note
+                    + ("\n\n" + queued_block if queued_block else "")
                 )
             except Exception as e:
                 logger.error("Failed to upload output file: %s", e)
@@ -741,7 +772,8 @@ async def ai_feedback(request: AIFeedbackRequest):
                     wrapped = build_wrapped_command_output(
                         request.command, request.exit_code, truncated, request.stderr or ""
                     )
-                provider.send_prompt(wrapped + attach_note)
+                provider.send_prompt(wrapped + attach_note
+                                     + ("\n\n" + queued_block if queued_block else ""))
             finally:
                 try:
                     if temp_file.exists():
@@ -755,7 +787,8 @@ async def ai_feedback(request: AIFeedbackRequest):
                 wrapped = build_wrapped_command_output(
                     request.command, request.exit_code, stdout_content or "", request.stderr or ""
                 )
-            provider.send_prompt(wrapped + attach_note)
+            provider.send_prompt(wrapped + attach_note
+                                 + ("\n\n" + queued_block if queued_block else ""))
         return provider.get_response()
 
     try:

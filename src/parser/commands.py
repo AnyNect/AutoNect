@@ -13,10 +13,21 @@ handles both raw and &lt;...&gt; forms.
 
 Legacy ```command fences are still accepted as a fallback.
 
+Background jobs: a skill name may be PREFIXED with queue
+(for example the tag for a queued shell command is the word
+"queue" immediately followed by "command"). The prefix is
+stripped and the entry gains ``queued: True``; the base skill
+name is unchanged, so every downstream consumer still sees the
+original skill. A queue prefix on an unknown base skill is
+dropped, same as an unknown skill today. The tag shape stays
+flat -- one tag, one skill -- so the same regex covers it and
+no nested-tag parsing is needed.
+
 Each match returns:
     skill  - the skill name (command, attach, kaggle, ...)
     code   - the payload, stripped
     raw    - the exact match
+    queued - True when the tag carried the queue prefix (omitted otherwise)
 """
 import re
 from typing import Dict, List
@@ -41,17 +52,27 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
     seen = set()
 
     for match in _TAG_RE.finditer(text):
-        skill = match.group(1).lower()
+        tag = match.group(1).lower()
+        queued = False
+        skill = tag
+        if tag.startswith("queue") and tag != "queue":
+            base = tag[len("queue"):]
+            if base in KNOWN_SKILLS:
+                skill = base
+                queued = True
         if skill not in KNOWN_SKILLS:
             continue
         code = match.group(2).strip()
         if not code:
             continue
-        key = (skill, code)
+        key = (skill, queued, code)
         if key in seen:
             continue
         seen.add(key)
-        commands.append({"skill": skill, "code": code, "raw": match.group(0)})
+        entry = {"skill": skill, "code": code, "raw": match.group(0)}
+        if queued:
+            entry["queued"] = True
+        commands.append(entry)
 
     if commands:
         return commands
@@ -60,7 +81,7 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
         code = match.group(1).strip()
         if not code:
             continue
-        key = ("command", code)
+        key = ("command", False, code)
         if key in seen:
             continue
         seen.add(key)
