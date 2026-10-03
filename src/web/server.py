@@ -27,6 +27,7 @@ from src.ai.providers.deepseek import DeepSeekProvider
 from src.parser.commands import extract_commands
 from src.skills import get_handler as _get_skill_handler
 from src.skills import queue_runner as _queue_runner
+from src.skills import kaggle as _kaggle
 from src.security import CommandGuard
 from src.core.config import config
 from src.database import upsert_chat, add_message, get_chat_list, get_chat, get_chat_by_url, update_chat, delete_chat, update_chat_name, chat_exists
