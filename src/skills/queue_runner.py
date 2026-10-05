@@ -17,6 +17,7 @@ skill, or command-output -- exactly as asked.
 Jobs live in server memory.  A server restart orphans a running job
 and its output never reaches the AI; a v2 could persist to disk.
 """
+import shlex
 import subprocess
 import threading
 import time
@@ -109,11 +110,28 @@ def _watcher(job_id: str) -> None:
         except Exception:
             pass
 
-def launch(code: str, ctx: Optional[dict] = None) -> dict:
-    """Launch ``code`` as a background shell command.  Returns job metadata."""
+def launch(code: str, ctx: Optional[dict] = None,
+           argv: Optional[list] = None) -> dict:
+    """Launch ``code`` as a background shell command, or ``argv`` directly.
+
+    ``argv`` bypasses the shell entirely: each element is one argument,
+    so shell metacharacters in the payload cannot chain a second command
+    and an executable path containing spaces needs no quoting. Skill
+    payloads whose contract is "args, not shell" (kaggle) MUST use the
+    argv form -- the shell form silently re-enables chaining, which is
+    exactly the hole this parameter exists to close.
+
+    ``code`` is used only when ``argv`` is None (the ``command`` skill,
+    which is a shell by design)."""
     job_id = "j-" + uuid.uuid4().hex[:8]
+    if argv is not None:
+        cmd = [str(a) for a in argv]
+        display = " ".join(shlex.quote(a) for a in cmd)
+    else:
+        cmd = ["bash", "-lc", code]
+        display = code
     proc = subprocess.Popen(
-        ["bash", "-lc", code],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
@@ -130,7 +148,7 @@ def launch(code: str, ctx: Optional[dict] = None) -> dict:
     t_err.start()
     job = {
         "job_id": job_id,
-        "command": code,
+        "command": display,
         "pid": proc.pid,
         "proc": proc,
         "started_at": _now(),

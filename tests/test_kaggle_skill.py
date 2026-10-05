@@ -76,11 +76,69 @@ def test_server_imports_kaggle_module():
     from src.web import server
     assert hasattr(server, "_kaggle")
 
-def test_queued_skill_command_maps_kaggle_to_a_bash_line():
+def test_queued_skill_command_maps_kaggle_to_argv():
+    # CHANGED 2026-10-05: the queued kaggle form is now an argv LIST,
+    # not a shell line. The old contract ("exe + payload" as one string
+    # fed to bash) caused two bugs: (1) a payload with a shell
+    # metacharacter chained a second command -- a documented security
+    # promise broken; (2) a binary path containing a space (the App
+    # Tests copy) was split by bash and died with exit 127.
     from src.web import server
-    line = server._queued_skill_command("kaggle", "kernels list")
-    assert line is not None
-    assert line.endswith("kaggle kernels list")
+    argv = server._queued_skill_command("kaggle", "kernels list -m")
+    assert isinstance(argv, list), argv
+    assert argv[0].endswith("kaggle")
+    assert argv[1:] == ["kernels", "list", "-m"]
+
+def test_queued_kaggle_payload_cannot_chain_a_shell_command():
+    # Regression for the injection bug: the payload must arrive as
+    # SEPARATE argv elements, so a ";" is one argument, not a command
+    # separator. If this ever returns a str again, bash re-enables
+    # chaining.
+    from src.web import server
+    argv = server._queued_skill_command("kaggle", "list; touch /tmp/pwned")
+    assert isinstance(argv, list), argv
+    # The ";" must NOT become a standalone argv element -- that would
+    # be a separator. It stays glued to "list" (shlex.split keeps it
+    # inside the word), so it is a literal character, not a command
+    # boundary. If this ever returns a str, bash re-enables chaining.
+    assert ";" not in argv, argv
+    assert any(";" in a for a in argv)  # present, but inert
+    assert argv[0].endswith("kaggle")
+
+def test_queued_kaggle_survives_a_space_in_the_exe_path(monkeypatch):
+    # Regression for the App Tests copy: the venv path has a space, so
+    # the old shell string was split by bash at "App" and exit 127.
+    # With argv, a space in argv[0] is just a character.
+    from src.web import server
+    from src.skills import kaggle as K
+    monkeypatch.setattr(K, "kaggle_bin",
+                        lambda: "/tmp/App Tests/venv/bin/kaggle")
+    argv = server._queued_skill_command("kaggle", "kernels list")
+    assert isinstance(argv, list)
+    assert argv[0] == "/tmp/App Tests/venv/bin/kaggle"
+    assert argv[1:] == ["kernels", "list"]
+
+def test_dispatcher_launches_queued_kaggle_without_a_shell():
+    # End-to-end: the dispatcher must pass argv=<list> to queue_runner,
+    # not code=<str>. We stub launch() to capture the call.
+    from src.web import server
+    from src.skills import queue_runner
+    captured = {}
+    def fake_launch(code, ctx=None, argv=None):
+        captured["code"] = code
+        captured["argv"] = argv
+        return {"job_id": "test", "status": "running"}
+    orig = queue_runner.launch
+    queue_runner.launch = fake_launch
+    try:
+        server._dispatch_skills(
+            [{"skill": "kaggle", "code": "kernels list -m",
+              "raw": "", "queued": True}], "t")
+    finally:
+        queue_runner.launch = orig
+    assert captured.get("argv"), captured
+    assert isinstance(captured["argv"], list)
+    assert captured["argv"][1:] == ["kernels", "list", "-m"]
 
 def test_queued_skill_command_unknown_skill_is_none():
     from src.web import server

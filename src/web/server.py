@@ -14,6 +14,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import logging
 from logging.config import dictConfig
+import shlex
 import subprocess
 import threading
 
@@ -451,16 +452,28 @@ def _annotate_commands_with_safety(commands: list[dict], session_id: str = "defa
 
 
 def _queued_skill_command(skill: str, code: str):
-    """Map a queued non-command skill to a shell line queue_runner can run.
+    """Map a queued non-command skill to something queue_runner can run.
 
-    queue_runner spawns bash, so a queued kaggle becomes a kaggle CLI
-    invocation. Returns None when the skill has no background form.
+    Returns:
+      - list[str]: run as argv, NO shell. Used for kaggle, whose
+        contract is "args, not shell" (see the docstring in
+        skills/kaggle.py). Doing this as a shell line broke that
+        promise -- a payload like "list; rm -rf ~" chained -- and also
+        died when the kaggle binary's path had a space (the App Tests
+        copy). argv fixes both.
+      - str: a shell line, for skills that genuinely need one.
+      - None: no background form.
     """
     if skill == "kaggle":
         exe = _kaggle.kaggle_bin()
         if not exe:
             return None
-        return f"{exe} {code}"
+        try:
+            args = shlex.split(code)
+        except ValueError as e:
+            logger.warning("queued kaggle: bad args %r: %s", code, e)
+            return None
+        return [exe, *args]
     return None
 
 
@@ -495,12 +508,19 @@ def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
             # A queued non-command skill (queuekaggle, ...) runs in the
             # background too. For kaggle we wrap the CLI invocation as a
             # shell line so queue_runner (which spawns bash) can run it.
-            line = _queued_skill_command(skill, cmd["code"])
-            if line is None:
+            target = _queued_skill_command(skill, cmd["code"])
+            if target is None:
                 logger.warning("queued skill %r has no runner -- dropping", skill)
                 continue
             try:
-                result = _queue_runner.launch(line, {"session_id": session_id})
+                if isinstance(target, list):
+                    # argv form -- no shell, so no injection, no
+                    # path-splitting on spaces. See _queued_skill_command.
+                    result = _queue_runner.launch(
+                        "", {"session_id": session_id}, argv=target)
+                else:
+                    result = _queue_runner.launch(
+                        target, {"session_id": session_id})
             except Exception as e:
                 logger.exception("queued skill launch failed")
                 result = {"error": str(e)}

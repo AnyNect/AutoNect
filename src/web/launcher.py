@@ -85,9 +85,12 @@ def cmd_login(args):
 
 
 def cmd_test(args):
+    # `browser` is deliberately absent: the old tests.test_browser was
+    # not a test (it launched a real browser at import time), so it was
+    # moved to scripts/manual/browser_probe.py. Use pytest for the
+    # suite; run the probe by hand when you need it.
     mapping = {
-        "config":  "tests.test_config",
-        "browser": "tests.test_browser",
+        "config": "tests.test_config",
     }
     target = args.target or "all"
     if target == "all":
