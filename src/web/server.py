@@ -433,13 +433,22 @@ def _annotate_commands_with_safety(commands: list[dict], session_id: str = "defa
         # never run, whatever the guard would say about its danger. Only
         # the "command" skill is handed to bash as a script; attach and
         # kaggle carry payloads, not shell lines.
-        if cmd.get("skill", "command") == "command":
-            syntax_err = check_bash_syntax(cmd["code"])
-            if syntax_err:
-                cmd["safety"] = "invalid"
-                cmd["safety_reason"] = syntax_err
-                annotated.append(cmd)
-                continue
+        if cmd.get("skill", "command") != "command":
+            # Non-shell skills (attach, kaggle) carry DATA, not shell
+            # lines.  The syntax gate and the shell command guard must
+            # not judge them -- a kaggle payload is an argument list,
+            # not a shell command, and running it through bash -n / the
+            # guard produced spurious warn/invalid verdicts (2026-10-06).
+            cmd["safety"] = "allow"
+            cmd["safety_reason"] = ""
+            annotated.append(cmd)
+            continue
+        syntax_err = check_bash_syntax(cmd["code"])
+        if syntax_err:
+            cmd["safety"] = "invalid"
+            cmd["safety_reason"] = syntax_err
+            annotated.append(cmd)
+            continue
         decision, info = guard.evaluate(cmd["code"], session_id)
         if decision == "ask":
             safety = "warn"
@@ -561,9 +570,12 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     if not commands:
         commands = extract_commands(answer)
 
-    thinking_commands = extract_commands(thinking)
-    thinking_codes = {cmd["code"] for cmd in thinking_commands}
-    commands = [cmd for cmd in commands if cmd["code"] not in thinking_codes]
+    # NOTE (2026-10-06): a former step dropped every answer command
+    # whose code also appeared in the model thinking text.  That
+    # silently deleted legitimate commands whenever the model
+    # reasoned about the same command it then emitted (the common
+    # case).  Duplicate suppression already happens inside
+    # extract_commands, so the extra filter was redundant and harmful.
     commands = _annotate_commands_with_safety(commands, session_id)
     commands = _dispatch_skills(commands, session_id)
     return thinking, answer, commands

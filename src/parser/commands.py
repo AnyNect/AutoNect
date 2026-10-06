@@ -33,9 +33,13 @@ import re
 from typing import Dict, List
 
 KNOWN_SKILLS = {"command", "attach", "kaggle"}
+# Only these have a background form. attach is instantaneous (path
+# validation), so a queue prefix on it degrades to plain attach
+# instead of being dropped by the dispatcher (bug 2026-10-06).
+BACKGROUNDABLE_SKILLS = {"command", "kaggle"}
 
 _TAG_RE = re.compile(
-    r"(?:<|&lt;)([a-zA-Z_][\w-]*)(?:>|&gt;)\s*\n"
+    r"(?:<|&lt;)([a-zA-Z_][\w-]*)(?:>|&gt;)\s*"
     r"([\s\S]*?)"
     r"\n?\s*(?:<|&lt;)/\1\s*(?:>|&gt;)",
     re.DOTALL,
@@ -59,7 +63,7 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
             base = tag[len("queue"):]
             if base in KNOWN_SKILLS:
                 skill = base
-                queued = True
+                queued = base in BACKGROUNDABLE_SKILLS
         if skill not in KNOWN_SKILLS:
             continue
         code = match.group(2).strip()

@@ -42,11 +42,21 @@ def test_bare_command_has_no_queued_flag():
 def test_queue_prefix_on_unknown_skill_is_dropped():
     assert extract_commands(_tag("queuebanana", "x")) == []
 
-def test_queueattach_parses_to_attach_with_queued_flag():
+def test_queueattach_degrades_to_plain_attach():
+    # attach has no background form (path validation is instant).
+    # A queue prefix must degrade to a plain attach, NOT mark it
+    # queued -- the dispatcher drops a queued attach for lack of a
+    # runner, so the old queued=True form silently lost the file
+    # request (bug fixed 2026-10-06).
     out = extract_commands(_tag("queueattach", "/tmp/x"))
     assert len(out) == 1
     assert out[0]["skill"] == "attach"
-    assert out[0].get("queued") is True
+    assert out[0].get("queued") is not True
+    # And the dispatcher must keep it (not drop it).
+    from src.web.server import _dispatch_skills
+    kept = _dispatch_skills(out, "t")
+    assert len(kept) == 1, kept
+    assert kept[0]["skill"] == "attach"
 
 # ── runner ─────────────────────────────────────────────────────────
 
