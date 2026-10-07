@@ -828,7 +828,12 @@ async def ai_feedback(request: AIFeedbackRequest):
 
         if is_multi:
             stdout_content = _assemble(cmds)
-            command_display = " | ".join(c.get('command', '') for c in cmds) or "multiple commands"
+            # HAZARD 4 (2026-10-07): do NOT join with " | " -- the
+            # commands were NOT piped; the frontend runs each card
+            # separately over /ws/execute.  A pipe-joined header told
+            # the AI the blocks ran as `A | B | C`, which is false.
+            command_display = " ; ".join(
+                c.get('command', '') for c in cmds) or "multiple commands"
 
         # Original (pre-truncation) size drives the file-vs-inline decision.
         original_size = len(stdout_content) if stdout_content else 0
@@ -847,7 +852,8 @@ async def ai_feedback(request: AIFeedbackRequest):
                     for c in cmds
                 ]
                 stdout_content = _assemble(cmds)
-                command_display = " | ".join(c.get('command', '') for c in cmds) or command_display
+                command_display = " ; ".join(
+                    c.get('command', '') for c in cmds) or command_display
             else:
                 stdout_content = _tail_bytes(stdout_content, PER_COMMAND_TAIL_BYTES)
 
