@@ -358,7 +358,30 @@ def cmd_run(args):
     recs, dropped = dedup_records(recs)
     print(f"run: {len(recs)} unique ({len(dropped)} dupes); reranking...", file=sys.stderr)
     qtitle = " | ".join(queries) if queries else (args.query or "(direct urls)")
-    recs = rerank_records(qtitle, recs, top_k=args.top)
+    # Rerank a wider pool, then enforce diversity + a relevance floor
+    # so the bundle is not one site repeated and not spam.  2398fb7d6d
+    # (both sources zhidao.baidu.com) is the case this guards.
+    recs = rerank_records(qtitle, recs, top_k=max(args.top * 3, 12))
+    _dom = {}
+    _kept = []
+    _floored = []
+    for r in recs:
+        if r.get("relevance", 0.0) < args.min_relevance:
+            _floored.append({"url": r["url"],
+                             "relevance": round(r.get("relevance", 0.0), 3)})
+            continue
+        d = urllib.parse.urlsplit(r["url"]).netloc
+        if _dom.get(d, 0) >= args.per_domain:
+            continue
+        _dom[d] = _dom.get(d, 0) + 1
+        _kept.append(r)
+        if len(_kept) >= args.top:
+            break
+    dropped = dropped + [{"url": f["url"], "reason": "below relevance floor",
+                          "relevance": f["relevance"]} for f in _floored]
+    recs = _kept
+    if not recs:
+        print("run: no sources passed the relevance floor", file=sys.stderr)
     md, js, index = write_bundle(qtitle, recs, dropped)
     payload = {"ok": True, "mode": "run", "query": args.query, "queries": queries,
                "sources": index, "dropped_duplicates": dropped,
@@ -573,6 +596,10 @@ def main():
     ru.add_argument("urls", nargs="*")
     ru.add_argument("--breadth", type=int, default=10, help="search results to fetch")
     ru.add_argument("--top", type=int, default=8, help="sources to keep after rerank")
+    ru.add_argument("--per-domain", type=int, default=2,
+                    help="max sources from any one domain (default 2)")
+    ru.add_argument("--min-relevance", type=float, default=-2.0,
+                    help="drop sources below this cross-encoder score")
     ru.add_argument("--warm", action="store_true",
                     help="pre-embed fetched docs for ground/verify (adds ~1s/source)")
     ru.add_argument("--queries", default=None,
