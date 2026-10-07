@@ -354,6 +354,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 class ChatRequest(BaseModel):
     prompt: str
     session_id: Optional[str] = None
+    load_context: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -643,6 +644,31 @@ async def chat(request: ChatRequest):
         logger.info("Injected %d bytes of background-job output", len(injected))
 
     def send_and_get():
+        # Load Context: attach the read-order files DIRECTLY to DeepSeek
+        # and send a short instruction, instead of making the model run
+        # the read-order fetch loop. 2026-10-07.
+        if request.load_context:
+            paths = _resolve_context_files()
+            logger.info("Load Context: attaching %d file(s)", len(paths))
+            if paths:
+                selector = provider.selectors.get("file_input", "input[type='file']")
+                provider.page.wait_for_selector(selector, state="attached", timeout=10000)
+                provider.page.set_input_files(selector, paths)
+            instruction = (
+                "The session-start context files are attached. Read them, then "
+                "follow the session-start protocol in FOR_AI.md: run the "
+                "session-start protocol (prayer-now + date), read the newest row "
+                "of personal/quran_progress.md, and open with the daily check-in. "
+                "Do not re-fetch these files; they are attached."
+            )
+            # New chats get the system prompt prepended, as in the normal
+            # path. Keep that behaviour so load_context does not silently
+            # drop the system prompt on a fresh session.
+            if is_new_chat and SYSTEM_PROMPT:
+                instruction = SYSTEM_PROMPT + "\n\n" + instruction
+            provider.send_prompt(instruction)
+            return provider.get_response()
+
         # If the assembled prompt exceeds the output-file threshold, attach
         # it as a file (mirroring the large-command-output path) instead of
         # filling the textarea, so nothing is truncated.
@@ -1004,6 +1030,37 @@ async def current_chat():
 
 
 CONTEXT_FILE_PATH = Path("User/FOR_AI.md")
+
+# Read-order files for the 'Load Context' flow. Attached DIRECTLY to
+# DeepSeek (no fetch loop). Paths relative to the server cwd, which is
+# the AutoNect project root. Missing files are skipped. 2026-10-07.
+CONTEXT_READ_ORDER = [
+    "NEXT_SESSION.md",
+    "projects/AutoNect/HANDOFF.md",
+    "projects/AutoNect/AI_CONTEXT.md",
+    "projects/AutoNect/DEEPSEEK.md",
+    "projects/Raji'/HANDOFF.md",
+    "projects/Raji'/INDEX.md",
+    "projects/Raji'/training/README.md",
+    "projects/Apprenticeship/INDEX.md",
+    "handoff/SESSION_LOG_INDEX.md",
+    "handoff/SESSION_LOG_" + __import__('datetime').date.today().isoformat() + ".md",
+    "FOR_AI.md",
+]
+
+CONTEXT_ROOT = Path("User")
+
+
+def _resolve_context_files():
+    """Absolute paths of the read-order files that exist."""
+    out = []
+    for rel in CONTEXT_READ_ORDER:
+        cand = CONTEXT_ROOT / rel
+        if cand.exists():
+            out.append(str(cand.resolve()))
+        else:
+            logger.warning("context file missing, skipped: %s", cand)
+    return out
 
 
 @app.get("/api/context/for-ai")

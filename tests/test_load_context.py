@@ -70,15 +70,21 @@ def test_button_present_in_html():
     assert "loadContextChat()" in html
 
 
-def test_loadContextChat_sends_for_ai_content():
+def test_loadContextChat_posts_load_context_flag():
+    """2026-10-07: loadContextChat no longer sends FOR_AI.md as a message.
+    It POSTs /api/chat with load_context=true; the SERVER attaches the
+    read-order files. This test asserts the request shape."""
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
 
-        # Block the DeepSeek navigation: it is not under test and would
-        # otherwise drive the server's Thorium instance.
+        # Block DeepSeek navigation; stub /api/chat and capture its body.
         page.route("**/api/browser/navigate", lambda route: route.fulfill(
             status=200, content_type="application/json", body='{"status":"success"}'
+        ))
+        page.route("**/api/chat", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body='{"answer":"ok","thinking":"","commands":[],"session_id":"new-1"}'
         ))
 
         page.goto(URL, wait_until="domcontentloaded")
@@ -86,29 +92,18 @@ def test_loadContextChat_sends_for_ai_content():
 
         res = page.evaluate(
             """async () => {
-                // Capture what executeTask receives instead of sending.
                 let captured = null;
-                const _orig = executeTask;
-                executeTask = (t) => { captured = t; };
-
-                currentChatId = 'old-chat-id';
-                chatArea.innerHTML = '<div class="message-row">old</div>';
-
-                await loadContextChat();
-
-                executeTask = _orig;
-                const out = {
-                    capturedLen: captured ? captured.length : 0,
-                    capturedHasTitle: captured ? captured.includes('Instructions for the AI reader') : false,
-                    currentChatId,
-                    welcomeShown: chatArea.innerHTML.includes('Loading context'),
+                const _orig = postWithRetry;
+                postWithRetry = (url, body) => {
+                    if (url === '/api/chat') captured = body;
+                    return _orig(url, body);
                 };
-                return out;
+                currentChatId = 'old-chat-id';
+                await loadContextChat();
+                postWithRetry = _orig;
+                return { captured, currentChatId };
             }"""
         )
-
-        assert res["capturedLen"] > 1000, res
-        assert res["capturedHasTitle"] is True, res
-        assert res["currentChatId"] is None, res
-
+        assert res["captured"] is not None, res
+        assert res["captured"].get("load_context") is True, res
         browser.close()

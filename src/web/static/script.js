@@ -297,32 +297,30 @@ async function loadChat(chatId) {
 }
 
 async function loadContextChat() {
-    // Start a fresh chat and send User/FOR_AI.md as the first message.
-    // The server prepends src/prompts/system.txt on new sessions, so
-    // this reproduces the manual "paste FOR_AI.md" flow in one click.
+    // Start a fresh chat and ask the SERVER to attach the read-order
+    // context files directly to DeepSeek. Previously this fetched
+    // FOR_AI.md and sent it as a message, which told the AI to run the
+    // read-order fetch loop itself (slow, and truncated). Now the files
+    // ride the attach channel and the server sends a short instruction.
+    // 2026-10-07.
     const btn = document.getElementById('loadContextBtn');
     if (btn) { btn.disabled = true; }
+
+    // Reset to a fresh chat view.
+    currentChatId = null;
+    chatArea.innerHTML = '';
+    const welcomeDiv = document.createElement('div');
+    welcomeDiv.className = 'message-row assistant';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = '<div class="bubble" style="color: var(--text-muted); text-align: center; padding: 30px 20px; opacity: 0.6;">Loading context (attaching read-order files)...</div>';
+    welcomeDiv.appendChild(contentDiv);
+    chatArea.appendChild(welcomeDiv);
+
+    isProcessing = true;
+    showLoading();
     try {
-        logger.info('Load Context: fetching FOR_AI.md');
-        const resp = await fetch('/api/context/for-ai');
-        if (!resp.ok) throw new Error('Server returned ' + resp.status);
-        const data = await resp.json();
-        if (!data.content || !data.content.trim()) {
-            throw new Error('FOR_AI.md is empty');
-        }
-
-        // Reset to a fresh chat view.
-        currentChatId = null;
-        chatArea.innerHTML = '';
-        const welcomeDiv = document.createElement('div');
-        welcomeDiv.className = 'message-row assistant';
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-        contentDiv.innerHTML = '<div class="bubble" style="color: var(--text-muted); text-align: center; padding: 30px 20px; opacity: 0.6;">Loading context (FOR_AI.md)...</div>';
-        welcomeDiv.appendChild(contentDiv);
-        chatArea.appendChild(welcomeDiv);
-
-        // Navigate DeepSeek to a fresh chat, then send the context file.
+        // Fresh DeepSeek chat, then the attach request.
         await fetch('/api/browser/navigate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -330,8 +328,18 @@ async function loadContextChat() {
         });
         renderChatList();
         toggleSidebar(false);
-        logger.info('Load Context: sending FOR_AI.md', { bytes: data.content.length });
-        executeTask(data.content);
+
+        logger.info('Load Context: requesting attached read-order files');
+        const response = await postWithRetry('/api/chat', {
+            prompt: '', session_id: null, load_context: true
+        });
+        if (!response.ok) throw new Error('Server returned ' + response.status);
+        const data = await response.json();
+        removeLoading();
+        addMessage('user', '[Load Context: read-order files attached]');
+        addMessage('assistant', data.answer, data.thinking, data.commands || [], false);
+        if (data.session_id) currentChatId = data.session_id;
+        await loadChatList();
     } catch (error) {
         logger.error('Load Context failed', error);
         removeLoading();
@@ -344,6 +352,7 @@ async function loadContextChat() {
         chatArea.appendChild(errDiv);
         scrollToBottom();
     } finally {
+        isProcessing = false;
         if (btn) { btn.disabled = false; }
     }
 }
