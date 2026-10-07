@@ -23,6 +23,41 @@ try:
 except ImportError:
     trafilatura = None
 
+try:
+    from markitdown import MarkItDown
+except ImportError:
+    MarkItDown = None
+
+# file extensions markitdown handles (binary docs); HTML stays trafilatura
+_DOC_EXT = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xls",
+            ".epub", ".rtf", ".odt", ".csv", ".json", ".xml"}
+
+_DOC_MIME = ("application/pdf", "application/msword",
+             "application/vnd.openxmlformats", "application/vnd.ms-",
+             "application/epub", "application/rtf", "application/vnd.oasis")
+
+def _doc_ext(url):
+    """True if the URL clearly names a binary document by extension."""
+    path = urllib.parse.urlsplit(url).path
+    return Path(path).suffix.lower() in _DOC_EXT
+
+def _is_doc_url(url, timeout=8):
+    """Extension OR content-type says this is a binary document.
+
+    Extension-less PDFs (arxiv.org/pdf/XXXX, many CDNs) are common, so
+    sniff the Content-Type with a cheap ranged GET when the path is bare.
+    """
+    if _doc_ext(url):
+        return True
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": UA, "Range": "bytes=0-0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ct = (resp.headers.get("Content-Type") or "").lower()
+        return any(m in ct for m in _DOC_MIME)
+    except Exception:
+        return False
+
 SEARX = os.environ.get("RESEARCH_SEARX_URL", "http://127.0.0.1:8888").rstrip("/")
 VAULT = Path(os.environ.get("RESEARCH_VAULT", str(Path.home() / ".autonect/research-vault")))
 UA = "autonect-research/0.2 (+local)"
@@ -85,6 +120,24 @@ def fetch_one(url):
     url = canon_url(url)
     rec = {"url": url, "ok": False, "title": "", "text": "",
            "meta": {}, "bytes": 0, "error": ""}
+    # binary documents (pdf/office/epub/csv/...): markitdown
+    if MarkItDown is not None and _is_doc_url(url):
+        try:
+            res = MarkItDown().convert_url(url)
+            txt = (res.text_content or "").strip()
+            if txt:
+                rec["text"] = txt
+                rec["title"] = getattr(res, "title", "") or ""
+                rec["bytes"] = len(txt)
+                rec["ok"] = True
+                rec["meta"] = {"sitename": urllib.parse.urlsplit(url).netloc,
+                               "converter": "markitdown"}
+                return rec
+            rec["error"] = "markitdown returned nothing"
+            return rec
+        except Exception as e:
+            rec["error"] = f"markitdown {type(e).__name__}: {e}"
+            return rec
     if trafilatura is None:
         rec["error"] = "trafilatura not installed"
         return rec
