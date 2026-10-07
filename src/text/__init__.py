@@ -1,0 +1,1 @@
+# text helpers for AutoNect
