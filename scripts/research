@@ -258,8 +258,21 @@ def cmd_selftest(args):
 
 # ---------------------------------------------------------------- Phase 3
 
+_EMBED_MODEL = os.environ.get(
+    "RESEARCH_EMBED_MODEL",
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
 def _load_models():
-    """Lazy singleton: embed + rerank models (CPU, ONNX)."""
+    """Lazy singleton: embed + rerank models (CPU, ONNX).
+
+    The embed model is ENV-DRIVEN and defaults to multilingual
+    MiniLM -- the SAME default as
+    scripts/research_index.EMBED_MODEL.  It used to be hardcoded
+    to an English-only model, so the whole-vault fallback of
+    ground/verify ranked Arabic queries as noise while the
+    index path ranked them correctly: a silent inconsistency
+    between the two paths.
+    """
     global _EMB, _CE
     try:
         return _EMB, _CE
@@ -267,7 +280,7 @@ def _load_models():
         pass
     from fastembed import TextEmbedding
     from fastembed.rerank.cross_encoder import TextCrossEncoder
-    _EMB = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    _EMB = TextEmbedding(model_name=_EMBED_MODEL)
     _CE = TextCrossEncoder(model_name="Xenova/ms-marco-MiniLM-L-6-v2")
     return _EMB, _CE
 
