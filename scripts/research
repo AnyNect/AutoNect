@@ -1,0 +1,599 @@
+#!/home/zizouurl/.autonect/research-venv/bin/python
+"""research — local deep-research engine CLI (Phase 2: probe + fetch).
+
+The ENGINE is local. The AGENT is remote; it calls this via AutoNect's
+<research> skill. No cloud API, no LLM.
+
+Usage:
+  research probe "QUERY" [--limit N] [--engines g,b] [--json]
+  research fetch URL [URL ...] [--json]
+  research selftest
+
+Env:
+  RESEARCH_SEARX_URL   default http://127.0.0.1:8888
+  RESEARCH_VAULT       default ~/.autonect/research-vault
+"""
+import argparse, hashlib, json, os, re, sys
+import urllib.parse, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+try:
+    import trafilatura
+except ImportError:
+    trafilatura = None
+
+SEARX = os.environ.get("RESEARCH_SEARX_URL", "http://127.0.0.1:8888").rstrip("/")
+VAULT = Path(os.environ.get("RESEARCH_VAULT", str(Path.home() / ".autonect/research-vault")))
+UA = "autonect-research/0.2 (+local)"
+
+_TRACK = re.compile(r"^(utm_|fbclid|gclid|mc_|ref$|igshid)", re.I)
+
+_EMB_BATCH = 8   # fastembed default 256 is ~5x slower on CPU
+
+def canon_url(url):
+    """Strip fragment + tracking params so the same page dedups."""
+    try:
+        p = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=False)
+         if not _TRACK.match(k)]
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path,
+                                    urllib.parse.urlencode(q), ""))
+
+def slug_for(url):
+    host = urllib.parse.urlsplit(url).netloc.replace(":", "_") or "page"
+    h = hashlib.sha1(canon_url(url).encode()).hexdigest()[:10]
+    return f"{host}-{h}"
+
+DEFAULT_ENGINES = "google cse,bing,mwmbl,yep,seznam"
+# stract + right dao dropped: too slow, crowded out by the fast five
+# (verified 2026-10-07: 0 results when mixed, 26 each when alone).
+# brave/ddg/startpage/mojeek: 0 -- blocked.  Pass --engines to opt in.
+
+def searx_search(query, limit=20, engines=None, lang="auto"):
+    params = {"q": query, "format": "json", "language": lang, "safesearch": "0"}
+    params["engines"] = engines or DEFAULT_ENGINES
+    url = f"{SEARX}/search?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+    except urllib.error.URLError as e:
+        print(json.dumps({"ok": False, "error": f"searx unreachable: {e}"}), file=sys.stderr)
+        sys.exit(2)
+    out, seen = [], set()
+    for r in data.get("results", []):
+        u = canon_url((r.get("url") or "").strip())
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        out.append({
+            "title": (r.get("title") or "").strip(),
+            "url": u,
+            "snippet": (r.get("content") or "").strip()[:400],
+            "engine": r.get("engine", ""),
+            "score": r.get("score", 0),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+def fetch_one(url):
+    """Fetch + extract one URL. Returns a dict; never raises."""
+    url = canon_url(url)
+    rec = {"url": url, "ok": False, "title": "", "text": "",
+           "meta": {}, "bytes": 0, "error": ""}
+    if trafilatura is None:
+        rec["error"] = "trafilatura not installed"
+        return rec
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            rec["error"] = "fetch returned empty (blocked or JS-only)"
+            return rec
+        rec["bytes"] = len(downloaded)
+        txt = trafilatura.extract(
+            downloaded, output_format="markdown",
+            with_metadata=True, include_links=False,
+            include_comments=False, favor_precision=True,
+        )
+        if not txt:
+            rec["error"] = "extract returned nothing (likely JS-only)"
+            return rec
+        meta = trafilatura.extract_metadata(downloaded)
+        if meta:
+            rec["title"] = meta.title or ""
+            rec["meta"] = {"title": meta.title, "author": meta.author,
+                           "date": meta.date, "sitename": meta.sitename,
+                           "description": meta.description}
+        # trafilatura's markdown already carries YAML front matter;
+        # strip it so save_to_vault does not double-wrap.
+        txt = re.sub(r"^---\n.*?\n---\n", "", txt, count=1, flags=re.S)
+        rec["text"] = txt
+        rec["ok"] = True
+    except Exception as e:
+        rec["error"] = f"{type(e).__name__}: {e}"
+    return rec
+
+def save_to_vault(rec):
+    VAULT.mkdir(parents=True, exist_ok=True)
+    slug = slug_for(rec["url"])
+    path = VAULT / f"{slug}.md"
+    fm = [
+        "---",
+        f"url: {rec['url']}",
+        f"title: {rec.get('title','') or rec['meta'].get('title','') or ''}",
+        f"sitename: {rec['meta'].get('sitename','') or ''}",
+        f"date: {rec['meta'].get('date','') or ''}",
+        f"author: {rec['meta'].get('author','') or ''}",
+        f"fetched_bytes: {rec.get('bytes',0)}",
+        "---", "",
+    ]
+    content = "\n".join(fm) + rec["text"]
+    # Idempotent: do NOT rewrite an identical doc -- preserving mtime
+    # keeps the per-file embedding cache entry valid.
+    if path.exists():
+        try:
+            if path.read_text(encoding="utf-8") == content:
+                return path
+        except Exception:
+            pass
+    path.write_text(content, encoding="utf-8")
+    return path
+
+def cmd_probe(args):
+    res = searx_search(args.query, limit=args.limit, engines=args.engines)
+    payload = {"ok": True, "mode": "probe", "query": args.query,
+               "count": len(res), "results": res}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"probe: {args.query!r}  ->  {len(res)} results")
+    for i, r in enumerate(res, 1):
+        eng = f"[{r['engine']}]" if r["engine"] else ""
+        print(f"{i:2}. {r['title'][:72]}")
+        print(f"    {r['url'][:100]}  {eng}")
+        if r["snippet"]:
+            print(f"    {r['snippet'][:120]}")
+
+def cmd_fetch(args):
+    urls = list(args.urls)
+    if args.from_probe:
+        urls = [r["url"] for r in searx_search(args.from_probe, limit=args.limit)]
+    if not urls:
+        print("fetch: no URLs (pass URLs or --from-probe)", file=sys.stderr)
+        sys.exit(2)
+    results = []
+    with ThreadPoolExecutor(max_workers=min(6, len(urls) or 1)) as ex:
+        for rec in ex.map(fetch_one, urls):
+            if rec["ok"]:
+                rec["vault_path"] = str(save_to_vault(rec))
+            results.append(rec)
+    ok = [r for r in results if r["ok"]]
+    payload = {"ok": True, "mode": "fetch", "count": len(results),
+               "ok_count": len(ok), "results": results}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"fetch: {len(ok)}/{len(results)} extracted")
+    for r in results:
+        tag = "OK " if r["ok"] else "ERR"
+        print(f"  {tag} {r['url'][:80]}")
+        if r["ok"]:
+            print(f"      {len(r['text'])} chars -> {r['vault_path']}")
+        else:
+            print(f"      {r['error']}")
+
+def cmd_selftest(args):
+    checks = []
+    try:
+        with urllib.request.urlopen(f"{SEARX}/", timeout=10) as r:
+            checks.append(("searx_http", r.status))
+    except Exception as e:
+        checks.append(("searx_http", f"FAIL {e}"))
+    try:
+        res = searx_search("test", limit=3)
+        checks.append(("searx_json", f"{len(res)} results"))
+    except SystemExit:
+        checks.append(("searx_json", "FAIL"))
+    checks.append(("trafilatura", trafilatura.__version__ if trafilatura else "MISSING"))
+    VAULT.mkdir(parents=True, exist_ok=True)
+    checks.append(("vault", str(VAULT)))
+    checks.append(("vault_docs", str(len(list(VAULT.glob('*.md'))))))
+    for k, v in checks:
+        print(f"  {k:14} {v}")
+
+# ---------------------------------------------------------------- Phase 3
+
+def _load_models():
+    """Lazy singleton: embed + rerank models (CPU, ONNX)."""
+    global _EMB, _CE
+    try:
+        return _EMB, _CE
+    except NameError:
+        pass
+    from fastembed import TextEmbedding
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+    _EMB = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    _CE = TextCrossEncoder(model_name="Xenova/ms-marco-MiniLM-L-6-v2")
+    return _EMB, _CE
+
+def _cosine_matrix(vecs):
+    import numpy as np
+    a = np.asarray(vecs, dtype="float32")
+    n = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-9)
+    return n @ n.T
+
+def dedup_records(recs, threshold=0.95):
+    """Drop near-duplicate docs by embedding cosine. Keeps first seen."""
+    if len(recs) < 2:
+        return recs, []
+    emb, _ = _load_models()
+    vecs = list(emb.embed([r["text"][:4000] for r in recs]))
+    sim = _cosine_matrix(vecs)
+    keep, dropped = [], []
+    for i, r in enumerate(recs):
+        dup = None
+        for j in [k for k, _ in keep]:
+            if sim[i][j] >= threshold:
+                dup = j
+                break
+        if dup is None:
+            keep.append((i, r))
+        else:
+            dropped.append({"url": r["url"], "duplicate_of": recs[dup]["url"]})
+    return [r for _, r in keep], dropped
+
+def rerank_records(query, recs, top_k=None):
+    """Cross-encoder relevance score per doc, descending."""
+    if not recs:
+        return []
+    _, ce = _load_models()
+    docs = [r["text"][:2000] for r in recs]
+    scores = list(ce.rerank(query, docs))
+    for r, s in zip(recs, scores):
+        r["relevance"] = float(s)
+    recs.sort(key=lambda r: r.get("relevance", 0.0), reverse=True)
+    return recs[:top_k] if top_k else recs
+
+def warm_cache_for(rec):
+    """Embed + cache one fetched doc's sentence spans (best-effort)."""
+    mp = Path(rec.get("vault_path", ""))
+    if not mp or not mp.exists():
+        return
+    if load_cached_spans(mp)[0] is not None:
+        return
+    try:
+        import numpy as np
+        spans = chunk_sentences(rec.get("text", ""))
+        if not spans:
+            return
+        emb, _ = _load_models()
+        vecs = list(emb.embed(spans, batch_size=_EMB_BATCH))
+        arr = np.stack([np.asarray(v, dtype="float32") for v in vecs])
+        save_cached_spans(mp, spans, arr)
+    except Exception:
+        pass
+
+def best_passages(query, text, top_k=4, max_chars=2500):
+    """Rank a doc's sentences against the query; return joined top spans.
+
+    Falls back to a plain head-truncation if the models or text fail.
+    """
+    try:
+        spans = chunk_sentences(text, min_len=60)
+        if not spans:
+            return text[:max_chars]
+        emb, ce = _load_models()
+        qvec = list(emb.embed([query], batch_size=1))[0]
+        import numpy as np
+        svecs = np.stack([np.asarray(v, dtype="float32")
+                          for v in emb.embed(spans, batch_size=_EMB_BATCH)])
+        sims = _cosine_one(qvec, svecs)
+        order = np.argsort(-sims)[:max(top_k * 3, 12)]
+        cand = [spans[i] for i in order]
+        scores = list(ce.rerank(query, cand))
+        ranked = sorted(zip(cand, scores), key=lambda x: x[1], reverse=True)
+        picked = [s for s, _ in ranked[:top_k]]
+        # keep original doc order for readability
+        idx = sorted(spans.index(s) for s in picked)
+        out = "\n\n".join(spans[i] for i in idx)
+        return out[:max_chars * 2]
+    except Exception:
+        return text[:max_chars]
+
+def write_bundle(query, recs, dropped, mode="run"):
+    import datetime
+    VAULT.mkdir(parents=True, exist_ok=True)
+    bdir = VAULT / "_bundles"
+    bdir.mkdir(exist_ok=True)
+    slug = hashlib.sha1(query.encode()).hexdigest()[:10]
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [f"# Research bundle: {query}", "",
+             f"Generated: {stamp}", f"Sources: {len(recs)} (deduped from {len(recs)+len(dropped)})", ""]
+    index = []
+    for i, r in enumerate(recs, 1):
+        lines += [f"## {i}. {r.get('title') or r['url']}", "",
+                  f"URL: {r['url']}",
+                  f"Relevance: {r.get('relevance', 0):.3f}",
+                  f"Vault: {r.get('vault_path', '(not saved)')}",
+                  "", best_passages(query, r["text"]), "", "---", ""]
+        index.append({"rank": i, "title": r.get("title", ""), "url": r["url"],
+                      "relevance": round(r.get("relevance", 0.0), 4),
+                      "vault_path": r.get("vault_path", ""), "chars": len(r["text"])})
+    md = bdir / f"{slug}.md"
+    js = bdir / f"{slug}.json"
+    md.write_text("\n".join(lines), encoding="utf-8")
+    js.write_text(json.dumps({"query": query, "mode": mode, "generated": stamp,
+                              "count": len(recs), "dropped_duplicates": dropped,
+                              "sources": index}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return md, js, index
+
+def cmd_run(args):
+    """Full loop: probe -> fetch -> dedup -> rerank -> evidence bundle."""
+    urls = list(args.urls)
+    queries = []
+    if args.query:
+        queries.append(args.query)
+    if args.queries:
+        queries += [q.strip() for q in args.queries.split(";") if q.strip()]
+    if queries and not urls:
+        seen = set()
+        for q in queries:
+            print(f"run: search {q!r}", file=sys.stderr)
+            for h in searx_search(q, limit=args.breadth):
+                if h["url"] not in seen:
+                    seen.add(h["url"]); urls.append(h["url"])
+    if not urls:
+        print("run: no URLs (pass a query or URLs)", file=sys.stderr); sys.exit(2)
+    print(f"run: fetching {len(urls)} URLs...", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        recs = [r for r in ex.map(fetch_one, urls) if r["ok"]]
+    for r in recs:
+        r["vault_path"] = str(save_to_vault(r))
+    if getattr(args, "warm", False):
+        for r in recs:
+            warm_cache_for(r)
+    print(f"run: {len(recs)} extracted; deduping...", file=sys.stderr)
+    recs, dropped = dedup_records(recs)
+    print(f"run: {len(recs)} unique ({len(dropped)} dupes); reranking...", file=sys.stderr)
+    qtitle = " | ".join(queries) if queries else (args.query or "(direct urls)")
+    recs = rerank_records(qtitle, recs, top_k=args.top)
+    md, js, index = write_bundle(qtitle, recs, dropped)
+    payload = {"ok": True, "mode": "run", "query": args.query, "queries": queries,
+               "sources": index, "dropped_duplicates": dropped,
+               "bundle_md": str(md), "bundle_json": str(js)}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"\nrun: bundle -> {md}")
+    print(f"     {len(index)} ranked sources, {len(dropped)} duplicates dropped")
+    for s in index:
+        print(f"  {s['rank']:2}. [{s['relevance']:6.2f}] {s['title'][:60]}")
+        print(f"      {s['url'][:90]}")
+
+
+# ---------------------------------------------------------------- Phase 5
+
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+
+def chunk_sentences(text, min_len=40):
+    """Split doc text into sentence-ish spans worth grounding against."""
+    out = []
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para or para.startswith(("#", "---", "|", "```")):
+            continue
+        for s in _SENT_SPLIT.split(para):
+            s = " ".join(s.split())
+            if len(s) >= min_len:
+                out.append(s)
+    return out
+
+def load_vault_docs():
+    """Every vault doc except bundles; returns [{url, path, text}]."""
+    docs = []
+    for p in sorted(VAULT.glob("*.md")):
+        if p.name.startswith("_"):
+            continue
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        url = ""
+        m = re.search(r"^url:\s*(.+)$", raw, re.M)
+        if m:
+            url = m.group(1).strip()
+        # drop our front matter
+        body = re.sub(r"^---\n.*?\n---\n", "", raw, count=1, flags=re.S)
+        docs.append({"url": url, "path": str(p), "text": body})
+    return docs
+
+def _cosine_one(qvec, mat):
+    import numpy as np
+    q = np.asarray(qvec, dtype="float32")
+    q = q / (np.linalg.norm(q) + 1e-9)
+    m = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9)
+    return m @ q
+
+_CACHE_DIR = VAULT / ".cache"
+
+def _cache_path_for(md_path):
+    h = hashlib.sha1(str(md_path).encode()).hexdigest()[:12]
+    return _CACHE_DIR / (h + ".pkl")
+
+def load_cached_spans(md_path):
+    """Return (spans, vecs) if the cache is fresh, else (None, None)."""
+    import pickle
+    cp = _cache_path_for(md_path)
+    if not cp.exists():
+        return None, None
+    try:
+        st = md_path.stat()
+        with cp.open("rb") as f:
+            d = pickle.load(f)
+        if d.get("mtime") != st.st_mtime or d.get("size") != st.st_size:
+            return None, None
+        return d.get("spans"), d.get("vecs")
+    except Exception:
+        return None, None
+
+def save_cached_spans(md_path, spans, vecs):
+    import pickle
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        st = md_path.stat()
+        cp = _cache_path_for(md_path)
+        with cp.open("wb") as f:
+            pickle.dump({"spans": spans, "vecs": vecs,
+                         "mtime": st.st_mtime, "size": st.st_size}, f)
+    except Exception:
+        pass
+
+def ground_claim(claim, top_k=8, prefilter=60):
+    """Find vault spans that best support a claim.
+
+    Two-stage: embedding prefilter (cheap, wide) -> cross-encoder
+    rerank (precise, narrow). Per-file embedding cache keyed on mtime.
+    """
+    import numpy as np
+    docs = load_vault_docs()
+    if not docs:
+        return []
+    emb, ce = _load_models()
+    per_doc = []
+    pending_texts = []
+    pending_idx = []
+    for d in docs:
+        mp = Path(d["path"])
+        csp, cvec = load_cached_spans(mp)
+        if csp is not None:
+            per_doc.append({"doc": d, "spans": csp, "vecs": cvec})
+        else:
+            fs = chunk_sentences(d["text"])
+            pd_i = len(per_doc)
+            per_doc.append({"doc": d, "spans": fs, "vecs": None})
+            for si, s in enumerate(fs):
+                pending_texts.append(s)
+                pending_idx.append((pd_i, si))
+    if pending_texts:
+        grouped = {}
+        for (pd_i, si), v in zip(pending_idx, emb.embed(pending_texts, batch_size=_EMB_BATCH)):
+            grouped.setdefault(pd_i, []).append((si, np.asarray(v, dtype="float32")))
+        for pd_i, pairs in grouped.items():
+            pairs.sort(key=lambda x: x[0])
+            arr = np.stack([v for _, v in pairs]).astype("float32")
+            per_doc[pd_i]["vecs"] = arr
+            save_cached_spans(Path(per_doc[pd_i]["doc"]["path"]), per_doc[pd_i]["spans"], arr)
+    spans = []
+    rows = []
+    for pd in per_doc:
+        vecs = pd["vecs"]
+        if vecs is None or len(pd["spans"]) == 0:
+            continue
+        for i, s in enumerate(pd["spans"]):
+            spans.append((pd["doc"], s))
+            rows.append(vecs[i])
+    if not spans:
+        return []
+    svecs = np.stack(rows).astype("float32")
+    qvec = list(emb.embed([claim], batch_size=1))[0]
+    sims = _cosine_one(qvec, svecs)
+    order = np.argsort(-sims)[:prefilter]
+    cand = [(spans[i][0], spans[i][1]) for i in order]
+    scores = list(ce.rerank(claim, [s for _, s in cand]))
+    ranked = sorted(zip(cand, scores), key=lambda x: x[1], reverse=True)
+    out = []
+    for (d, s), sc in ranked[:top_k]:
+        out.append({"url": d["url"], "path": d["path"],
+                    "sentence": s, "score": round(float(sc), 3)})
+    return out
+
+def cmd_ground(args):
+    res = ground_claim(args.claim, top_k=args.top)
+    payload = {"ok": True, "mode": "ground", "claim": args.claim,
+               "support_count": len(res), "supports": res}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"ground: {args.claim[:80]!r}")
+    print(f"  {len(res)} supporting spans found in the vault")
+    for i, r in enumerate(res, 1):
+        print(f"  {i}. [{r['score']:6.2f}] {r['url'][:70]}")
+        print(f"     {r['sentence'][:140]}")
+
+def cmd_verify(args):
+    """Ground every citation-bearing sentence in a markdown report."""
+    rp = Path(args.report)
+    if not rp.exists():
+        print(f"verify: no such file: {rp}", file=sys.stderr); sys.exit(2)
+    text = rp.read_text(encoding="utf-8", errors="replace")
+    claims = [s for s in chunk_sentences(text, min_len=30)
+              if re.search(r"\[\d+\]|https?://", s)]
+    if not claims:
+        claims = chunk_sentences(text, min_len=30)[:args.max]
+    rows = []
+    for c in claims[:args.max]:
+        sup = ground_claim(c, top_k=1)
+        top = sup[0] if sup else None
+        rows.append({"claim": c[:300],
+                     "best_score": top["score"] if top else None,
+                     "best_url": top["url"] if top else "",
+                     "best_span": top["sentence"][:300] if top else "",
+                     "supported": bool(top and top["score"] > args.threshold)})
+    n_ok = sum(1 for r in rows if r["supported"])
+    payload = {"ok": True, "mode": "verify", "report": str(rp),
+               "claims": len(rows), "supported": n_ok,
+               "threshold": args.threshold, "rows": rows}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"verify: {rp.name} — {n_ok}/{len(rows)} claims grounded "
+          f"(threshold {args.threshold})")
+    for r in rows:
+        tag = "OK " if r["supported"] else "WEAK"
+        sc = f"{r['best_score']:6.2f}" if r["best_score"] is not None else "  --  "
+        print(f"  {tag} [{sc}] {r['claim'][:70]}")
+        if r["best_span"]:
+            print(f"        <- {r['best_span'][:90]}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="research")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pr = sub.add_parser("probe", help="search only")
+    pr.add_argument("query")
+    pr.add_argument("--limit", type=int, default=20)
+    pr.add_argument("--engines", default=None)
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(func=cmd_probe)
+    fe = sub.add_parser("fetch", help="fetch + extract URLs into the vault")
+    fe.add_argument("urls", nargs="*")
+    fe.add_argument("--from-probe", default=None,
+                    help="probe this query, then fetch its top results")
+    fe.add_argument("--limit", type=int, default=8)
+    fe.add_argument("--json", action="store_true")
+    fe.set_defaults(func=cmd_fetch)
+    ru = sub.add_parser("run", help="full loop: probe->fetch->dedup->rerank->bundle")
+    ru.add_argument("query", nargs="?", default=None)
+    ru.add_argument("urls", nargs="*")
+    ru.add_argument("--breadth", type=int, default=10, help="search results to fetch")
+    ru.add_argument("--top", type=int, default=8, help="sources to keep after rerank")
+    ru.add_argument("--warm", action="store_true",
+                    help="pre-embed fetched docs for ground/verify (adds ~1s/source)")
+    ru.add_argument("--queries", default=None,
+                    help="semicolon-separated extra queries; union their hits")
+    ru.add_argument("--json", action="store_true")
+    ru.set_defaults(func=cmd_run)
+    gr = sub.add_parser("ground", help="find vault spans that support a claim")
+    gr.add_argument("claim")
+    gr.add_argument("--top", type=int, default=8)
+    gr.add_argument("--json", action="store_true")
+    gr.set_defaults(func=cmd_ground)
+    vf = sub.add_parser("verify", help="ground every citation in a report")
+    vf.add_argument("report")
+    vf.add_argument("--max", type=int, default=40)
+    vf.add_argument("--threshold", type=float, default=1.0)  # cross-encoder scale
+    vf.add_argument("--json", action="store_true")
+    vf.set_defaults(func=cmd_verify)
+    st = sub.add_parser("selftest")
+    st.set_defaults(func=cmd_selftest)
+    args = p.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()
