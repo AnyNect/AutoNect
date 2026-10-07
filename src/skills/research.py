@@ -71,6 +71,9 @@ def _parse_payload(payload: str) -> list[str]:
     argv += urls
     if kv.get("breadth"): argv += ["--breadth", kv["breadth"]]
     if kv.get("top"): argv += ["--top", kv["top"]]
+    if kv.get("engines"): argv += ["--engines", kv["engines"]]
+    if kv.get("per_domain"): argv += ["--per-domain", kv["per_domain"]]
+    if kv.get("min_relevance"): argv += ["--min-relevance", kv["min_relevance"]]
     return argv + ["--json"]
 
 def handle(payload: str, ctx: dict) -> dict:
