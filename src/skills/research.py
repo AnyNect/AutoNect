@@ -2,7 +2,7 @@
 
 Payload is a small block of key: value lines (the agent writes them):
 
-    mode: run          # probe | fetch | run  (default: run)
+    mode: run          # probe | fetch | run | index | search | context
     query: <text>      # required for probe/run
     breadth: 10        # search results to fetch (run)
     top: 8             # sources kept after rerank (run)
@@ -72,6 +72,12 @@ def _parse_payload(payload: str) -> list[str]:
         argv = ["fetch", *urls]
         if kv.get("limit"): argv += ["--limit", kv["limit"]]
         return argv + ["--json"]
+    if mode == "index":
+        return _parse_index(kv)
+    if mode == "search":
+        return _parse_search(kv)
+    if mode == "context":
+        return _parse_context(kv)
     # default: run
     argv = ["run"]
     if kv.get("query"): argv.append(kv["query"])
@@ -82,6 +88,31 @@ def _parse_payload(payload: str) -> list[str]:
     if kv.get("per_domain"): argv += ["--per-domain", kv["per_domain"]]
     if kv.get("min_relevance"): argv += ["--min-relevance", kv["min_relevance"]]
     return argv + ["--json"]
+
+def _parse_index(kv):
+    argv = ["index"]
+    if kv.get("rebuild", "").lower() in ("1", "true", "yes"):
+        argv.append("--rebuild")
+    return argv + ["--json"]
+
+def _parse_search(kv):
+    argv = ["search", kv.get("query", "")]
+    if kv.get("top"): argv += ["--top", kv["top"]]
+    if kv.get("show_text", "").lower() in ("1", "true", "yes"):
+        argv.append("--show-text")
+    return argv + ["--json"]
+
+def _parse_context(kv):
+    argv = ["context", kv.get("query", "")]
+    if kv.get("queries"): argv += ["--queries", kv["queries"]]
+    if kv.get("budget"): argv += ["--budget", kv["budget"]]
+    if kv.get("per_doc"): argv += ["--per-doc", kv["per_doc"]]
+    if kv.get("top"): argv += ["--top", kv["top"]]
+    if kv.get("max_lines"): argv += ["--max-lines", kv["max_lines"]]
+    if kv.get("no_compress", "").lower() in ("1", "true", "yes"):
+        argv.append("--no-compress")
+    if kv.get("out"): argv += ["--out", kv["out"]]
+    return argv
 
 def handle(payload: str, ctx: dict) -> dict:
     exe = _research_bin()
@@ -119,6 +150,15 @@ def handle(payload: str, ctx: dict) -> dict:
             elif data.get("mode") == "fetch":
                 note = (f"research: {data.get('ok_count', 0)}/"
                         f"{data.get('count', 0)} pages extracted.")
+            elif data.get("mode") == "index":
+                st = data.get("stats", {})
+                note = (f"index: {st.get('docs', 0)} docs, "
+                        f"{st.get('chunks', 0)} chunks, "
+                        f"{st.get('db_bytes', 0)/1e6:.1f} MB, "
+                        f"{data.get('reindexed', 0)} refreshed.")
+            elif data.get("mode") == "search":
+                note = (f"search: {data.get('count', 0)} hits over the "
+                        f"indexed vault (hybrid dense+BM25).")
         except ValueError:
             pass
     return {

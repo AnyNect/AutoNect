@@ -121,3 +121,38 @@ def test_queued_research_maps_to_argv():
     assert isinstance(r, list), "queued research must be argv"
     assert r[0].endswith("research")
     assert r[1] == "probe"
+
+# ---- new modes: index / search / context (2026-10-07) ----
+
+def test_index_mode_argv():
+    from src.skills.research import _parse_payload
+    assert _parse_payload("mode: index") == ["index", "--json"]
+
+def test_index_mode_rebuild():
+    from src.skills.research import _parse_payload
+    assert _parse_payload("mode: index\nrebuild: true") == ["index", "--rebuild", "--json"]
+
+def test_search_mode_argv():
+    from src.skills.research import _parse_payload
+    argv = _parse_payload("mode: search\nquery: hybrid retrieval\ntop: 5")
+    assert argv[:2] == ["search", "hybrid retrieval"]
+    assert "--top" in argv and "5" in argv and argv[-1] == "--json"
+
+def test_search_mode_show_text():
+    from src.skills.research import _parse_payload
+    argv = _parse_payload("mode: search\nquery: x\nshow_text: yes")
+    assert "--show-text" in argv
+
+def test_context_mode_argv():
+    from src.skills.research import _parse_payload
+    argv = _parse_payload("mode: context\nquery: how does RRF work\n"
+                          "budget: 8000\nper_doc: 2000\nqueries: a;b")
+    assert argv[0] == "context" and argv[1] == "how does RRF work"
+    assert "--budget" in argv and "8000" in argv
+    assert "--per-doc" in argv and "2000" in argv
+    assert "--queries" in argv and "a;b" in argv
+
+def test_context_mode_no_compress():
+    from src.skills.research import _parse_payload
+    argv = _parse_payload("mode: context\nquery: x\nno_compress: true")
+    assert "--no-compress" in argv

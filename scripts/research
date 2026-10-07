@@ -1,4 +1,4 @@
-#!/home/zizouurl/.autonect/research-venv/bin/python
+#!/home/zizouurl/.autonect/research-venv314/bin/python
 """research — local deep-research engine CLI (Phase 2: probe + fetch).
 
 The ENGINE is local. The AGENT is remote; it calls this via AutoNect's
@@ -396,6 +396,100 @@ def cmd_run(args):
         print(f"      {s['url'][:90]}")
 
 
+# ---------------------------------------------------------------- index bridge
+# Hybrid retrieval index (sqlite-vec + bm25s + FTS5).  Optional: every
+# command below degrades gracefully if the index module or DB is absent.
+
+def _idx():
+    """Import the index module (scripts/research_index.py)."""
+    import importlib.util
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location(
+        "research_index", here / "research_index.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+def cmd_index(args):
+    """Build or refresh the retrieval index from the vault."""
+    ri = _idx()
+    conn, sv = ri.connect()
+    if args.rebuild:
+        import shutil
+        d = ri.IDX_DIR
+        if d.exists():
+            shutil.rmtree(d)
+        conn, sv = ri.connect()
+    docs = list(ri.iter_vault_docs())
+    t0 = __import__("time").time()
+    n_new = n_chunks = n_err = 0
+    for url, path, title, fm in docs:
+        try:
+            n, changed = ri.index_doc(conn, sv, url, path, title=title, meta=fm)
+            n_chunks += n
+            n_new += 1 if changed else 0
+        except Exception as e:
+            n_err += 1
+            print(f"  ERR {title[:40]}: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+    st = ri.stats(conn)
+    payload = {"ok": True, "mode": "index", "docs": len(docs),
+               "reindexed": n_new, "chunks": n_chunks, "errors": n_err,
+               "seconds": round(__import__("time").time() - t0, 1),
+               "stats": st}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"index: {len(docs)} docs, {n_new} (re)indexed, "
+          f"{n_chunks} chunks, {n_err} errors, "
+          f"{payload['seconds']}s")
+    print(f"       db={st['db']}  {st['db_bytes']/1e6:.1f} MB  "
+          f"model={st['embed_model']}")
+
+def cmd_search(args):
+    """Hybrid (dense + BM25, RRF-fused) search over the indexed vault."""
+    ri = _idx()
+    conn, sv = ri.connect()
+    hits = ri.search(conn, sv, args.query, top=args.top)
+    payload = {"ok": True, "mode": "search", "query": args.query,
+               "count": len(hits), "hits": hits}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)); return
+    print(f"search: {args.query!r}  ({len(hits)} hits)")
+    for i, h in enumerate(hits, 1):
+        print(f"  {i}. rrf={h['rrf']:.5f} d={h['dense']:.3f} "
+              f"s={h['sparse']:.3f}")
+        print(f"     {h['title'] or h['url']}")
+        print(f"     {h['url'][:90]}")
+        if args.show_text:
+            print(f"     {h['text'][:200].replace(chr(10),' ')}")
+
+def cmd_context(args):
+    """Assemble a token-budgeted, compressed AI context block."""
+    ri = _idx()
+    conn, sv = ri.connect()
+    queries = [args.query] + ([q.strip() for q in args.queries.split(";") if q.strip()]
+                              if args.queries else [])
+    comp = None
+    if not args.no_compress:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "text"))
+            from compress import compress as _c
+            comp = lambda t: _c(t, max_lines=args.max_lines)
+        except Exception:
+            comp = None
+    blocks, total = ri.build_context(
+        conn, sv, queries, budget_chars=args.budget,
+        per_doc=args.per_doc, top=args.top, compress_fn=comp)
+    header = (f"# Research context: {' | '.join(queries)}\n"
+              f"Blocks: {len(blocks)}  Chars: {total}  "
+              f"(budget {args.budget})\n\n")
+    out = header + "\n".join(blocks)
+    if args.out:
+        Path(args.out).write_text(out, encoding="utf-8")
+        print(f"context -> {args.out}  ({len(blocks)} blocks, {total} chars)")
+    else:
+        print(out)
+
 # ---------------------------------------------------------------- Phase 5
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
@@ -470,12 +564,38 @@ def save_cached_spans(md_path, spans, vecs):
     except Exception:
         pass
 
+def _ground_indexed(claim, top_k=8, prefilter=60):
+    """Index-backed grounding: hybrid retrieve (O(log n), multilingual),
+    then cross-encoder rerank for precision. Returns [] if no index."""
+    ri = _idx()
+    conn, sv = ri.connect()
+    hits = ri.search(conn, sv, claim, top=prefilter)
+    if not hits:
+        return []
+    _, ce = _load_models()
+    scores = list(ce.rerank(claim, [h["text"] for h in hits]))
+    ranked = sorted(zip(hits, scores), key=lambda x: x[1], reverse=True)
+    out = []
+    for h, sc in ranked[:top_k]:
+        out.append({"url": h["url"], "path": "",
+                    "sentence": h["text"][:600],
+                    "score": round(float(sc), 3),
+                    "rrf": h["rrf"], "dense": h["dense"],
+                    "sparse": h["sparse"]})
+    return out
+
 def ground_claim(claim, top_k=8, prefilter=60):
     """Find vault spans that best support a claim.
 
-    Two-stage: embedding prefilter (cheap, wide) -> cross-encoder
-    rerank (precise, narrow). Per-file embedding cache keyed on mtime.
+    Index-backed hybrid retrieve + cross-encoder rerank when the index
+    exists (fast, multilingual); falls back to the whole-vault scan.
     """
+    try:
+        res = _ground_indexed(claim, top_k=top_k, prefilter=prefilter)
+        if res:
+            return res
+    except Exception:
+        pass
     import numpy as np
     docs = load_vault_docs()
     if not docs:
@@ -620,6 +740,27 @@ def main():
     vf.add_argument("--threshold", type=float, default=1.0)  # cross-encoder scale
     vf.add_argument("--json", action="store_true")
     vf.set_defaults(func=cmd_verify)
+    ix = sub.add_parser("index", help="build/refresh the retrieval index")
+    ix.add_argument("--rebuild", action="store_true",
+                    help="drop and rebuild the whole index")
+    ix.add_argument("--json", action="store_true")
+    ix.set_defaults(func=cmd_index)
+    se = sub.add_parser("search", help="hybrid vault search (dense+BM25)")
+    se.add_argument("query")
+    se.add_argument("--top", type=int, default=8)
+    se.add_argument("--show-text", action="store_true")
+    se.add_argument("--json", action="store_true")
+    se.set_defaults(func=cmd_search)
+    cx = sub.add_parser("context", help="compressed, budgeted AI context block")
+    cx.add_argument("query")
+    cx.add_argument("--queries", default=None, help="semicolon-separated extra queries")
+    cx.add_argument("--budget", type=int, default=12000, help="max chars")
+    cx.add_argument("--per-doc", type=int, default=4000, help="max chars per doc")
+    cx.add_argument("--top", type=int, default=10)
+    cx.add_argument("--max-lines", type=int, default=0)
+    cx.add_argument("--no-compress", action="store_true")
+    cx.add_argument("--out", default=None, help="write to file instead of stdout")
+    cx.set_defaults(func=cmd_context)
     st = sub.add_parser("selftest")
     st.set_defaults(func=cmd_selftest)
     args = p.parse_args()
