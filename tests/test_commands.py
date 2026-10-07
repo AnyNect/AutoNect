@@ -72,3 +72,31 @@ def test_embedded_closing_tag_not_truncated():
     cmds = extract_commands(sample)
     assert len(cmds) == 1
     assert cmds[0]["code"] == payload
+
+
+def test_md_escaped_underscore_in_tag():
+    U = chr(95); B = chr(92)
+    payload = "echo a" + B + U + "b"
+    tag = '<command>' + chr(10) + payload + chr(10) + '</command>'
+    cmds = extract_commands(tag)
+    assert len(cmds) == 1, cmds
+    assert cmds[0]["code"] == "echo a" + U + "b", cmds
+
+
+def test_md_escaped_underscore_in_fence():
+    U = chr(95); B = chr(92)
+    payload = "echo a" + B + U + "b"
+    body = '<command>' + chr(10) + payload + chr(10) + '</command>'
+    sample = F3 + chr(10) + body + chr(10) + F3
+    cmds = extract_commands(sample)
+    assert len(cmds) == 1, cmds
+    assert cmds[0]["code"] == "echo a" + U + "b", cmds
+
+
+def test_regex_backslash_preserved():
+    B = chr(92)
+    payload = "grep 1" + B + ".2 file"
+    tag = '<command>' + chr(10) + payload + chr(10) + '</command>'
+    cmds = extract_commands(tag)
+    assert len(cmds) == 1, cmds
+    assert cmds[0]["code"] == payload, cmds

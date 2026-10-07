@@ -76,7 +76,7 @@ def _make_entry(tag: str, raw_code: str, raw: str):
             queued = base in BACKGROUNDABLE_SKILLS
     if skill not in KNOWN_SKILLS:
         return None
-    code = raw_code.strip()
+    code = unescape_md(raw_code).strip()
     if not code:
         return None
     entry = {"skill": skill, "code": code, "raw": raw}
@@ -115,7 +115,7 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
                 queued = base in BACKGROUNDABLE_SKILLS
         if skill not in KNOWN_SKILLS:
             continue
-        code = match.group(2).strip()
+        code = unescape_md(match.group(2)).strip()
         if not code:
             continue
         key = (skill, queued, code)
@@ -131,7 +131,7 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
         return commands
 
     for match in _FENCE_RE.finditer(text):
-        code = match.group(1).strip()
+        code = unescape_md(match.group(1)).strip()
         if not code:
             continue
         key = ("command", False, code)
@@ -140,3 +140,16 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
         seen.add(key)
         commands.append({"skill": "command", "code": code, "raw": match.group(0)})
     return commands
+# Markdown escapes the HTML-to-Markdown conversion inserts into prose
+# (underscore becomes backslash-underscore; star becomes backslash-star).
+# A command carrying them reaches the shell literally and breaks: bash
+# warns 'stray backslash before underscore', python raises a line
+# continuation error. Strip them from command payloads. Underscore only:
+# a backslash before anything else (e.g. a regex dot) is meaningful and
+# must be kept.
+MD_ESCAPED = ('_',)
+
+def unescape_md(s):
+    for ch in MD_ESCAPED:
+        s = s.replace(chr(92) + ch, ch)
+    return s
