@@ -341,7 +341,8 @@ def cmd_run(args):
         seen = set()
         for q in queries:
             print(f"run: search {q!r}", file=sys.stderr)
-            for h in searx_search(q, limit=args.breadth):
+            for h in searx_search(q, limit=args.breadth,
+                                  engines=getattr(args, "engines", None)):
                 if h["url"] not in seen:
                     seen.add(h["url"]); urls.append(h["url"])
     if not urls:
@@ -596,6 +597,8 @@ def main():
     ru.add_argument("urls", nargs="*")
     ru.add_argument("--breadth", type=int, default=10, help="search results to fetch")
     ru.add_argument("--top", type=int, default=8, help="sources to keep after rerank")
+    ru.add_argument("--engines", default=None,
+                    help="comma-separated SearXNG engines (default: general 5)")
     ru.add_argument("--per-domain", type=int, default=2,
                     help="max sources from any one domain (default 2)")
     ru.add_argument("--min-relevance", type=float, default=-2.0,
