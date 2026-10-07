@@ -1045,6 +1045,7 @@ CONTEXT_READ_ORDER = [
     "projects/Apprenticeship/INDEX.md",
     "handoff/SESSION_LOG_INDEX.md",
     "handoff/SESSION_LOG_" + __import__('datetime').date.today().isoformat() + ".md",
+    "personal/quran_progress.md",
     "FOR_AI.md",
 ]
 
