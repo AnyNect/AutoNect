@@ -19,7 +19,7 @@ import subprocess
 import threading
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -611,6 +611,28 @@ async def index():
         },
     )
 
+
+# ── Root CA download (for the phone to trust the HTTPS cert) ──
+# The :8000 instance serves HTTPS with an mkcert cert.  A phone must
+# TRUST the mkcert root CA or the mic is blocked behind the cert
+# warning.  Serving the CA CERTIFICATE (never the key) at a URL the
+# phone can open makes that one step.  Path is configurable; 404 when
+# absent so a non-HTTPS instance is unaffected.
+_CA_CERT = os.environ.get(
+    "AUTONECT_CA_CERT",
+    os.path.expanduser("~/.local/share/mkcert/rootCA.pem"))
+
+@app.get("/ca.crt")
+async def root_ca():
+    """Serve the mkcert root CA for phone trust.  Public cert only."""
+    if not os.path.isfile(_CA_CERT):
+        return JSONResponse(status_code=404,
+                            content={"error": "no CA cert configured"})
+    return FileResponse(
+        _CA_CERT,
+        media_type="application/x-x509-ca-cert",
+        filename="autonect-rootCA.crt",
+        headers={"Cache-Control": "no-store"})
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
