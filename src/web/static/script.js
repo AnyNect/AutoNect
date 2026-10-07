@@ -1870,11 +1870,13 @@ async function handleAllow(card, onComplete = null) {
     let collectedOutput = '';
     let exitCode = -1;
     let outputId = null;
+    let exited = false;
 
     ws.onmessage = async (event) => {
         if (event.data instanceof Blob) {
             const reader = new FileReader();
             reader.onload = () => {
+                if (exited) return;
                 const bytes = new Uint8Array(reader.result);
                 term.write(bytes, () => {
                     collectedOutput += new TextDecoder().decode(bytes);
@@ -1893,6 +1895,16 @@ async function handleAllow(card, onComplete = null) {
             if (msg.type === 'exit') {
                 exitCode = msg.code;
                 if (msg.output) collectedOutput = msg.output;
+                exited = true;
+                // Repaint from the cleaned output so the 'exit'
+                // sentinel and any echo are not shown. exited=true
+                // stops late async Blob reads appending after this.
+                try {
+                    if (typeof msg.output === 'string') {
+                        term.reset();
+                        term.write(msg.output);
+                    }
+                } catch (e) {}
                 outputId = msg.output_id || null;
                 ws.close();
                 logger.info('Command exited', { exitCode, outputLength: collectedOutput.length, outputId });

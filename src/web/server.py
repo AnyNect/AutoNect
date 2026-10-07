@@ -1290,6 +1290,11 @@ async def websocket_execute(websocket: WebSocket):
     # then feed the command via the PTY master. This prevents tools like
     # `pkill -f` from matching and SIGTERM-ing the shell's own command line.
     logger.info("Forking PTY for command: %s", command[:100])
+    # Readiness pipe: the child clears terminal ECHO, then signals.
+    # The parent MUST wait for that signal before writing the command,
+    # or the write races ahead of tcsetattr and the line discipline
+    # echoes the command back into the output.
+    _ready_r, _ready_w = os.pipe()
     pid, master_fd = pty.fork()
     if pid == 0:
         # pty.fork() already called setsid() in the child.
@@ -1302,6 +1307,28 @@ async def websocket_execute(websocket: WebSocket):
         os.environ["MANPAGER"] = "cat"
         os.environ["SYSTEMD_PAGER"] = "cat"
         os.environ["LESS"] = "-FRX"
+        # Empty prompts: without this the shell prints a PS1
+        # ("sh-5.3$ ") before every command and exit, which shows
+        # up as noise in the output pane.
+        os.environ["PS1"] = ""
+        os.environ["PS2"] = ""
+        # Disable terminal echo so the command fed via the master
+        # (and the shell redraw of it) is not sent back to the UI.
+        # Without this the PTY echoes the command twice: once by
+        # the line discipline, once as the shell re-displays input.
+        try:
+            attrs = termios.tcgetattr(0)
+            attrs[3] &= ~termios.ECHO
+            attrs[3] &= ~termios.ECHOCTL
+            termios.tcsetattr(0, termios.TCSANOW, attrs)
+        except Exception:
+            pass
+        try:
+            os.close(_ready_r)
+            os.write(_ready_w, b"1")
+            os.close(_ready_w)
+        except Exception:
+            pass
         os.execvp("/bin/sh", ["/bin/sh"])
         os._exit(1)
 
@@ -1310,6 +1337,14 @@ async def websocket_execute(websocket: WebSocket):
     # Make PTY non-blocking
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    # Wait for the child to clear ECHO before feeding the command.
+    try:
+        os.close(_ready_w)
+        os.read(_ready_r, 1)
+        os.close(_ready_r)
+    except OSError:
+        pass
 
     # Send the command to the shell via the PTY master.
     try:
@@ -1500,6 +1535,12 @@ async def websocket_execute(websocket: WebSocket):
         pass
 
     final_output = b"".join(output_chunks).decode(errors="replace")
+    # Strip the trailing "exit" sentinel the server writes to close
+    # the shell. It is not part of the command output.
+    _stripped = final_output.rstrip()
+    if _stripped.endswith("exit"):
+        _stripped = _stripped[:-4].rstrip("\r\n")
+        final_output = _stripped + "\n" if _stripped else ""
 
     output_id = uuid.uuid4().hex
     _output_cache[output_id] = final_output
