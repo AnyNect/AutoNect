@@ -28,8 +28,15 @@ RESEARCH_BIN = HOME / ".local" / "bin" / "research"
 TIMEOUT = 300  # a run fetches + reranks; keep inline, queue for huge
 
 def _research_bin():
+    # 1. the installed binary (~/.local/bin/research, usually a symlink)
     if RESEARCH_BIN.exists():
         return str(RESEARCH_BIN)
+    # 2. the in-repo engine: <repo>/scripts/research, two levels up from
+    #    src/skills/research.py -- lets a fresh clone work with no install.
+    repo_bin = Path(__file__).resolve().parents[2] / "scripts" / "research"
+    if repo_bin.exists():
+        return str(repo_bin)
+    # 3. anything on PATH
     import shutil
     return shutil.which("research")
 
