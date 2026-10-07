@@ -958,6 +958,21 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
             const pre = codeEl.closest('pre');
             if (pre) pre.style.color = '';
         });
+
+        // Strip raw skill-tag blocks (<command>/<attach>/<kaggle>) from
+        // the rendered bubble. This MUST run for every assistant message,
+        // not only when commands.length > 0: a historical turn with no
+        // stored commands, or any turn whose skill failed to parse, would
+        // otherwise render the fenced tag block as visible prose AND as a
+        // card -- the double-render bug. 2026-10-07.
+        bubble.querySelectorAll('pre').forEach((preEl) => {
+            const codeEl = preEl.querySelector('code');
+            if (!codeEl) return;
+            const codeText = codeEl.textContent.trim();
+            if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                preEl.remove();
+            }
+        });
         if (commands && commands.length > 0) {
             // CRITICAL (2026-10-02 regression): split into shell commands
             // and other skills. The approval group's total MUST count
@@ -976,20 +991,6 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                 historical
             });
 
-            // Strip raw skill-tag blocks (<command>/<attach>/<kaggle>)
-            // from the bubble FIRST, before the commandSkills gate.
-            // A turn whose only skill is <attach> or <kaggle> never
-            // enters the block below, so leaving this inside it made
-            // the raw <attach> fence render as a duplicate text block
-            // above its skill card (2026-10-02 bug).
-            bubble.querySelectorAll('pre').forEach((preEl) => {
-                const codeEl = preEl.querySelector('code');
-                if (!codeEl) return;
-                const codeText = codeEl.textContent.trim();
-                if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
-                    preEl.remove();
-                }
-            });
 
             let group = null;
             if (commandSkills.length > 0) {

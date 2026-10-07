@@ -51,9 +51,58 @@ _FENCE_RE = re.compile(
 )
 
 
+# A fenced skill block: ``` ... ``` whose body starts with a skill tag.
+# Inside a fence, the REAL closing tag is the LAST one, so a literal
+# closing tag embedded in a payload (e.g. inside a heredoc) does not
+# truncate the command. Hazard fired 2026-10-07.
+_FENCED_TAG_RE = re.compile(
+    r"```[a-zA-Z0-9_-]*\s*\n"
+    r"\s*(?:<|&lt;)([a-zA-Z_][\w-]*)(?:>|&gt;)"
+    r"([\s\S]*?)"
+    r"\n?\s*(?:<|&lt;)/\1\s*(?:>|&gt;)\s*\n?```",
+    re.DOTALL,
+)
+
+
+def _make_entry(tag: str, raw_code: str, raw: str):
+    """Build a command entry from a tag name and payload, or None."""
+    tag = tag.lower()
+    queued = False
+    skill = tag
+    if tag.startswith("queue") and tag != "queue":
+        base = tag[len("queue"):]
+        if base in KNOWN_SKILLS:
+            skill = base
+            queued = base in BACKGROUNDABLE_SKILLS
+    if skill not in KNOWN_SKILLS:
+        return None
+    code = raw_code.strip()
+    if not code:
+        return None
+    entry = {"skill": skill, "code": code, "raw": raw}
+    if queued:
+        entry["queued"] = True
+    return entry
+
+
 def extract_commands(text: str) -> List[Dict[str, str]]:
     commands: List[Dict[str, str]] = []
     seen = set()
+
+    # 1) Fenced skill blocks first -- greedy to the LAST closing tag so an
+    #    embedded literal tag cannot truncate the payload.
+    for match in _FENCED_TAG_RE.finditer(text):
+        entry = _make_entry(match.group(1), match.group(2), match.group(0))
+        if entry is None:
+            continue
+        key = (entry["skill"], entry.get("queued", False), entry["code"])
+        if key in seen:
+            continue
+        seen.add(key)
+        commands.append(entry)
+
+    if commands:
+        return commands
 
     for match in _TAG_RE.finditer(text):
         tag = match.group(1).lower()
