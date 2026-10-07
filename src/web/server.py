@@ -29,6 +29,7 @@ from src.parser.commands import extract_commands
 from src.skills import get_handler as _get_skill_handler
 from src.skills import queue_runner as _queue_runner
 from src.skills import kaggle as _kaggle
+from src.skills import research as _research
 from src.security import CommandGuard
 from src.security.syntax import check_bash_syntax
 from src.core.config import config
@@ -482,6 +483,18 @@ def _queued_skill_command(skill: str, code: str):
             args = shlex.split(code)
         except ValueError as e:
             logger.warning("queued kaggle: bad args %r: %s", code, e)
+            return None
+        return [exe, *args]
+    if skill == "research":
+        exe = _research._research_bin()
+        if not exe:
+            return None
+        try:
+            args = _research._parse_payload(code)
+        except Exception as e:
+            logger.warning("queued research: bad payload %r: %s", code, e)
+            return None
+        if not args:
             return None
         return [exe, *args]
     return None

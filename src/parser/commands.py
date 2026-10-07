@@ -32,7 +32,7 @@ Each match returns:
 import re
 from typing import Dict, List
 
-KNOWN_SKILLS = {"command", "attach", "kaggle"}
+KNOWN_SKILLS = {"command", "attach", "kaggle", "research"}
 # Only these have a background form. attach is instantaneous (path
 # validation), so a queue prefix on it degrades to plain attach
 # instead of being dropped by the dispatcher (bug 2026-10-06).

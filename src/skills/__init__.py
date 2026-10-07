@@ -10,12 +10,14 @@ from typing import Callable, Dict
 from src.skills import attach as _attach
 from src.skills import queue_runner as _queue_runner
 from src.skills import kaggle as _kaggle
+from src.skills import research as _research
 
 Handler = Callable[[str, dict], dict]
 
 HANDLERS: Dict[str, Handler] = {
     "attach": _attach.handle,
     "kaggle": _kaggle.handle,
+    "research": _research.handle,
 }
 
 

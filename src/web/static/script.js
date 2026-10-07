@@ -1314,7 +1314,7 @@ function createSkillSection(skillCmds, historical, group = null) {
             note.className = 'skill-result';
             note.textContent = 'Output will ride the next message.';
             body.appendChild(note);
-        } else if (skill === 'attach') {
+        } else if (skill === 'attach' || skill === 'research') {
             // The server sends result.paths (raw strings, resolved at
             // feedback time). Older handlers sent result.files (objects).
             // Normalise both to {path, bytes, mime} for display + paths[].
@@ -1380,6 +1380,7 @@ function skillTitle(skill) {
     switch (skill) {
         case 'attach': return 'Files sent to AI';
         case 'kaggle': return 'Kaggle';
+        case 'research': return 'Local research';
         case 'queue': return 'Background job';
         default: return skill;
     }

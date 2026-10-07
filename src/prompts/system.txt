@@ -57,6 +57,15 @@ The tag name is the skill. Currently available:
   kaggle  - run a Kaggle CLI action. Payload is kaggle arguments
             (e.g. "kernels status user/kernel"). Inline by default;
             use queuekaggle for long ones.
+  research - run the LOCAL deep-research engine (SearXNG + fetch +
+            rerank, all on this machine). Payload is key:value lines:
+              mode: run      (probe | fetch | run | selftest)
+              query: <text>
+              breadth: 10    (search results to fetch)
+              top: 8         (sources kept after rerank)
+            For fetch mode, list URLs one per line under a "urls:" line.
+            Returns a cited evidence bundle attached to your next turn.
+            Use queueresearch for very broad runs.
 
 
 BACKGROUND JOBS - the "queue" prefix

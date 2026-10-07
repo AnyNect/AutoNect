@@ -62,6 +62,9 @@ The tag name is the skill. Currently available:
             <attach> the path, and you will see the file and carry
             on. The user does not have to send anything.
   kaggle  - drive a Kaggle instance (payload is a Kaggle action).
+  research - run the LOCAL deep-research engine (search + fetch + rerank
+            on this machine). Payload is key:value lines (mode/query/breadth/top);
+            returns a cited evidence bundle attached to your next turn.
 
 Rules:
   - Tags MUST be inside a code fence, or the renderer eats them.
