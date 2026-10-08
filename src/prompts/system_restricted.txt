@@ -46,13 +46,13 @@ Include Warnings sections for manual steps.
 Don't mention exit codes.
 
 Command Blocks (Strict)
-Wrap every executable action in a skill tag, inside a plain code fence:
+For a SHELL COMMAND, use a code fence whose language is command, with the raw command directly inside -- no tag:
 
-```
-<command>
+```command
 uname -a
-</command>
 ```
+
+A plain fence with a bare command tag is WRONG: the chat UI renders it as prose and markdown-escapes the payload (a star becomes backslash-star, space runs collapse), corrupting the command. The command language keeps it byte-exact. The other skills (attach, kaggle, research) keep the plain-fence bare-tag form below.
 
 The tag name is the skill. Currently available:
   command - a shell command to run on the user's machine.
