@@ -100,3 +100,33 @@ def test_regex_backslash_preserved():
     cmds = extract_commands(tag)
     assert len(cmds) == 1, cmds
     assert cmds[0]["code"] == payload, cmds
+
+
+def test_normalize_wraps_bare_tag():
+    from src.parser.commands import normalize_skill_fences
+    NL = chr(10)
+    bare = "Here you go." + NL + NL + "<command>" + NL + "ls -la" + NL + "</command>" + NL
+    out = normalize_skill_fences(bare)
+    assert chr(96) * 3 in out
+    assert "<command>" + NL + "ls -la" + NL + "</command>" in out
+    cmds = extract_commands(out)
+    assert len(cmds) == 1
+    assert cmds[0]["skill"] == "command"
+    assert cmds[0]["code"] == "ls -la"
+
+
+def test_normalize_idempotent_on_fenced():
+    from src.parser.commands import normalize_skill_fences
+    F3 = chr(96) * 3
+    NL = chr(10)
+    fenced = "Prose." + NL + NL + F3 + NL + "<command>" + NL + "ls" + NL + "</command>" + NL + F3 + NL
+    out = normalize_skill_fences(fenced)
+    assert out == fenced
+
+
+def test_normalize_skips_unknown_tags():
+    from src.parser.commands import normalize_skill_fences
+    NL = chr(10)
+    text = "Hi " + "<notaskill>" + NL + "x" + NL + "</notaskill>" + NL
+    out = normalize_skill_fences(text)
+    assert chr(96) * 3 not in out

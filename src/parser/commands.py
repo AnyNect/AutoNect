@@ -153,3 +153,49 @@ def unescape_md(s):
     for ch in MD_ESCAPED:
         s = s.replace(chr(92) + ch, ch)
     return s
+
+
+def normalize_skill_fences(text: str) -> str:
+    """Wrap BARE skill tags in fences so the UI strip catches them.
+    
+    Why: the frontend removes fenced skill blocks from the rendered
+    prose by walking pre elements.  A bare tag is not inside a pre,
+    so its payload renders as visible prose AND again as an executed-
+    command card -- the double-render bug.  Normalising on the server
+    is the single source of truth: the fenced form is what
+    extract_commands already prefers and what the frontend strips.
+    
+    Idempotent: tags already inside a fence are left untouched.
+    """
+    if not text or ('<' not in text and '&lt;' not in text):
+        return text
+    spans = [(m.start(), m.end()) for m in _FENCED_TAG_RE.finditer(text)]
+    def _inside(pos):
+        for a, b in spans:
+            if a <= pos < b:
+                return True
+        return False
+    F3 = chr(96) * 3
+    NL = chr(10)
+    out = []
+    last = 0
+    for m in _TAG_RE.finditer(text):
+        if _inside(m.start()):
+            continue
+        tag = m.group(1).lower()
+        base = tag
+        if tag.startswith('queue') and tag != 'queue':
+            base = tag[len('queue'):]
+        if base not in KNOWN_SKILLS:
+            continue
+        out.append(text[last:m.start()])
+        raw = m.group(0)
+        prefix = ''
+        if out and not out[-1].endswith(NL):
+            prefix = NL
+        out.append(prefix + F3 + NL + raw + NL + F3)
+        last = m.end()
+    if not out:
+        return text
+    out.append(text[last:])
+    return ''.join(out)

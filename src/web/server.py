@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.ai.providers.deepseek import DeepSeekProvider
-from src.parser.commands import extract_commands
+from src.parser.commands import extract_commands, normalize_skill_fences
 from src.skills import get_handler as _get_skill_handler
 from src.skills import queue_runner as _queue_runner
 from src.skills import kaggle as _kaggle
@@ -580,6 +580,7 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     thinking = response.get("thinking", "")
     answer = response.get("answer", "")
     commands = response.get("commands", [])
+    answer = normalize_skill_fences(answer)
 
     if not commands:
         commands = extract_commands(answer)
