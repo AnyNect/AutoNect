@@ -1,33 +1,24 @@
 """Extract executable skill requests from an AI response.
 
-Preferred format: a skill tag inside a plain code fence.
+FENCE-ONLY (2026-10-08): a skill tag is recognised ONLY inside a code
+fence. A tag written in loose prose is plain text, never a command. The
+former bare-tag pass was removed: a tag written while explaining the
+syntax (e.g. in prose about the tag itself) was being executed.
 
-    <command>
-    echo hi
-    </command>
+Accepted forms:
+ 1. command-language fence -- three backticks, then the word command, then
+ the raw shell text. Survives the HTML to Markdown pass byte-exact and
+ is the form the system prompt requests.
+ 2. plain fence wrapping a skill tag -- the tag name is the skill.
+ Used by attach/kaggle/research and by historical chats.
+ 3. legacy three-backtick command fence.
 
-The tag name is the skill (command, attach, kaggle, ...). Bare tags are
-eaten by markdownify when the DeepSeek answer is converted HTML ->
-markdown, so tags must be inside a fence (or entity-escaped); the regex
-handles both raw and &lt;...&gt; forms.
+Background jobs: a skill name may be prefixed with queue (a queued shell
+command is the word queue immediately followed by command). The prefix is
+stripped and the entry gains queued: True.
 
-Legacy ```command fences are still accepted as a fallback.
-
-Background jobs: a skill name may be PREFIXED with queue
-(for example the tag for a queued shell command is the word
-"queue" immediately followed by "command"). The prefix is
-stripped and the entry gains ``queued: True``; the base skill
-name is unchanged, so every downstream consumer still sees the
-original skill. A queue prefix on an unknown base skill is
-dropped, same as an unknown skill today. The tag shape stays
-flat -- one tag, one skill -- so the same regex covers it and
-no nested-tag parsing is needed.
-
-Each match returns:
-    skill  - the skill name (command, attach, kaggle, ...)
-    code   - the payload, stripped
-    raw    - the exact match
-    queued - True when the tag carried the queue prefix (omitted otherwise)
+Each match returns: skill, code (the payload), raw (the exact match), and
+queued: True when the tag carried the queue prefix.
 """
 import re
 from typing import Dict, List
@@ -38,12 +29,6 @@ KNOWN_SKILLS = {"command", "attach", "kaggle", "research"}
 # instead of being dropped by the dispatcher (bug 2026-10-06).
 BACKGROUNDABLE_SKILLS = {"command", "kaggle"}
 
-_TAG_RE = re.compile(
-    r"(?:<|&lt;)([a-zA-Z_][\w-]*)(?:>|&gt;)\s*"
-    r"([\s\S]*?)"
-    r"\n?\s*(?:<|&lt;)/\1\s*(?:>|&gt;)",
-    re.DOTALL,
-)
 
 _FENCE_RE = re.compile(
     r"```command\s*\n(.*?)```",
@@ -104,32 +89,6 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
     if commands:
         return commands
 
-    for match in _TAG_RE.finditer(text):
-        tag = match.group(1).lower()
-        queued = False
-        skill = tag
-        if tag.startswith("queue") and tag != "queue":
-            base = tag[len("queue"):]
-            if base in KNOWN_SKILLS:
-                skill = base
-                queued = base in BACKGROUNDABLE_SKILLS
-        if skill not in KNOWN_SKILLS:
-            continue
-        code = unescape_md(match.group(2)).strip()
-        if not code:
-            continue
-        key = (skill, queued, code)
-        if key in seen:
-            continue
-        seen.add(key)
-        entry = {"skill": skill, "code": code, "raw": match.group(0)}
-        if queued:
-            entry["queued"] = True
-        commands.append(entry)
-
-    if commands:
-        return commands
-
     for match in _FENCE_RE.finditer(text):
         code = unescape_md(match.group(1)).strip()
         if not code:
@@ -153,49 +112,3 @@ def unescape_md(s):
     for ch in MD_ESCAPED:
         s = s.replace(chr(92) + ch, ch)
     return s
-
-
-def normalize_skill_fences(text: str) -> str:
-    """Wrap BARE skill tags in fences so the UI strip catches them.
-    
-    Why: the frontend removes fenced skill blocks from the rendered
-    prose by walking pre elements.  A bare tag is not inside a pre,
-    so its payload renders as visible prose AND again as an executed-
-    command card -- the double-render bug.  Normalising on the server
-    is the single source of truth: the fenced form is what
-    extract_commands already prefers and what the frontend strips.
-    
-    Idempotent: tags already inside a fence are left untouched.
-    """
-    if not text or ('<' not in text and '&lt;' not in text):
-        return text
-    spans = [(m.start(), m.end()) for m in _FENCED_TAG_RE.finditer(text)]
-    def _inside(pos):
-        for a, b in spans:
-            if a <= pos < b:
-                return True
-        return False
-    F3 = chr(96) * 3
-    NL = chr(10)
-    out = []
-    last = 0
-    for m in _TAG_RE.finditer(text):
-        if _inside(m.start()):
-            continue
-        tag = m.group(1).lower()
-        base = tag
-        if tag.startswith('queue') and tag != 'queue':
-            base = tag[len('queue'):]
-        if base not in KNOWN_SKILLS:
-            continue
-        out.append(text[last:m.start()])
-        raw = m.group(0)
-        prefix = ''
-        if out and not out[-1].endswith(NL):
-            prefix = NL
-        out.append(prefix + F3 + NL + raw + NL + F3)
-        last = m.end()
-    if not out:
-        return text
-    out.append(text[last:])
-    return ''.join(out)

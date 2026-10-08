@@ -6,7 +6,9 @@ what we assert. Nothing hits the network.
 from src.skills import kaggle
 
 def _tag(name, body):
-    return "<" + name + ">\n" + body + "\n</" + name + ">"
+    # Fence-only since 2026-10-08: a bare tag is no longer a command.
+    F = "```"
+    return F + "\n<" + name + ">\n" + body + "\n</" + name + ">\n" + F
 
 # ── handler ─────────────────────────────────────────────────────────
 

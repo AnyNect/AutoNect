@@ -14,7 +14,9 @@ from src.parser.commands import extract_commands
 from src.skills import queue_runner
 
 def _tag(name, body):
-    return "<" + name + ">\n" + body + "\n</" + name + ">"
+    # Fence-only since 2026-10-08: a bare tag is no longer a command.
+    F = "```"
+    return F + "\n<" + name + ">\n" + body + "\n</" + name + ">\n" + F
 
 def _wait_done(job_id, timeout=10.0):
     deadline = time.time() + timeout

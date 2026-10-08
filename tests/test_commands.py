@@ -33,7 +33,7 @@ def test_attach_skill():
 
 
 def test_escaped_tag():
-    sample = "&lt;command&gt;\nls -la\n&lt;/command&gt;"
+    sample = F3 + "\n&lt;command&gt;\nls -la\n&lt;/command&gt;\n" + F3
     cmds = extract_commands(sample)
     assert len(cmds) == 1
     assert cmds[0]["skill"] == "command"
@@ -77,7 +77,7 @@ def test_embedded_closing_tag_not_truncated():
 def test_md_escaped_underscore_in_tag():
     U = chr(95); B = chr(92)
     payload = "echo a" + B + U + "b"
-    tag = '<command>' + chr(10) + payload + chr(10) + '</command>'
+    tag = F3 + chr(10) + "<command>" + chr(10) + payload + chr(10) + "</command>" + chr(10) + F3
     cmds = extract_commands(tag)
     assert len(cmds) == 1, cmds
     assert cmds[0]["code"] == "echo a" + U + "b", cmds
@@ -96,37 +96,32 @@ def test_md_escaped_underscore_in_fence():
 def test_regex_backslash_preserved():
     B = chr(92)
     payload = "grep 1" + B + ".2 file"
-    tag = '<command>' + chr(10) + payload + chr(10) + '</command>'
+    tag = F3 + chr(10) + "<command>" + chr(10) + payload + chr(10) + "</command>" + chr(10) + F3
     cmds = extract_commands(tag)
     assert len(cmds) == 1, cmds
     assert cmds[0]["code"] == payload, cmds
 
 
-def test_normalize_wraps_bare_tag():
-    from src.parser.commands import normalize_skill_fences
-    NL = chr(10)
-    bare = "Here you go." + NL + NL + "<command>" + NL + "ls -la" + NL + "</command>" + NL
-    out = normalize_skill_fences(bare)
-    assert chr(96) * 3 in out
-    assert "<command>" + NL + "ls -la" + NL + "</command>" in out
-    cmds = extract_commands(out)
-    assert len(cmds) == 1
-    assert cmds[0]["skill"] == "command"
-    assert cmds[0]["code"] == "ls -la"
+def test_bare_tag_in_prose_is_not_a_command():
+    # Fence-only since 2026-10-08: a tag written in prose (e.g. while
+    # explaining the syntax) must NOT execute.
+    o = '<' + "command" + '>'
+    c = '</' + "command" + '>'
+    prose = "To run, write " + o + "ls -la" + c + " in a fence."
+    assert extract_commands(prose) == []
 
 
-def test_normalize_idempotent_on_fenced():
-    from src.parser.commands import normalize_skill_fences
-    F3 = chr(96) * 3
-    NL = chr(10)
-    fenced = "Prose." + NL + NL + F3 + NL + "<command>" + NL + "ls" + NL + "</command>" + NL + F3 + NL
-    out = normalize_skill_fences(fenced)
-    assert out == fenced
+def test_bare_tag_own_line_in_prose_is_not_a_command():
+    o = '<' + "command" + '>'
+    c = '</' + "command" + '>'
+    text = "Syntax:" + chr(10) + o + "ls -la" + c + chr(10) + "Use it."
+    assert extract_commands(text) == []
 
 
-def test_normalize_skips_unknown_tags():
-    from src.parser.commands import normalize_skill_fences
-    NL = chr(10)
-    text = "Hi " + "<notaskill>" + NL + "x" + NL + "</notaskill>" + NL
-    out = normalize_skill_fences(text)
-    assert chr(96) * 3 not in out
+def test_command_language_fence_extracts():
+    sample = F3 + "command" + chr(10) + "echo hi" + chr(10) + F3
+    out = extract_commands(sample)
+    assert len(out) == 1, out
+    assert out[0]["skill"] == "command"
+    assert out[0]["code"] == "echo hi"
+
