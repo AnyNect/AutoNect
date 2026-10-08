@@ -2322,6 +2322,44 @@ if (promptInput) {
     promptInput.addEventListener('paste', function(e) {
         const cd = e.clipboardData;
         if (!cd) return;
+
+        // Image(s) on the clipboard -- route into the same attachedFiles
+        // path the picker and drag-drop use, so /api/upload pushes them to
+        // DeepSeek via set_input_files. Without this branch an image paste
+        // is dropped (getData('text/plain') is empty for an image).
+        const items = cd.items || [];
+        const imageFiles = [];
+        for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
+                const f = it.getAsFile();
+                if (f) imageFiles.push(f);
+            }
+        }
+        if (imageFiles.length > 0) {
+            e.preventDefault();
+            let seq = 0;
+            for (let f of imageFiles) {
+                // Pasted images often arrive nameless; give them one so the
+                // extension check and the chip label both work.
+                let name = f.name;
+                if (!name) {
+                    const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+                    const stamp = Date.now();
+                    name = 'pasted-' + stamp + '-' + (++seq) + '.' + ext;
+                }
+                const file = (f.name ? f : new File([f], name, { type: f.type }));
+                if (!isFileSupported(file)) {
+                    alert('Image format not supported: ' + (file.type || name));
+                    continue;
+                }
+                const exists = attachedFiles.some(a => a.name === file.name && a.size === file.size);
+                if (!exists) attachedFiles.push(file);
+            }
+            showAttachedFiles();
+            return;
+        }
+
         const pasted = cd.getData('text/plain') || '';
         if (pasted.length < PASTE_CHIP_THRESHOLD) return;
         e.preventDefault();
