@@ -156,3 +156,20 @@ def test_context_mode_no_compress():
     from src.skills.research import _parse_payload
     argv = _parse_payload("mode: context\nquery: x\nno_compress: true")
     assert "--no-compress" in argv
+
+def test_search_mode_rerank_flags():
+    from src.skills.research import _parse_payload
+    argv = _parse_payload("mode: search\nquery: x\nrerank: true\n"
+                          "min_relevance: 0\nno_dedup: yes")
+    assert "--rerank" in argv
+    assert "--min-relevance" in argv and "0" in argv
+    assert "--no-dedup" in argv
+
+def test_search_mode_dedup_default():
+    """Without the flags, none of the new options is passed -- so the
+    engine default (dedup ON, no rerank) is what the agent gets."""
+    from src.skills.research import _parse_payload
+    argv = _parse_payload("mode: search\nquery: x")
+    assert "--rerank" not in argv
+    assert "--no-dedup" not in argv
+    assert "--min-relevance" not in argv

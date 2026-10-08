@@ -100,6 +100,11 @@ def _parse_search(kv):
     if kv.get("top"): argv += ["--top", kv["top"]]
     if kv.get("show_text", "").lower() in ("1", "true", "yes"):
         argv.append("--show-text")
+    if kv.get("rerank", "").lower() in ("1", "true", "yes"):
+        argv.append("--rerank")
+    if kv.get("min_relevance"): argv += ["--min-relevance", kv["min_relevance"]]
+    if kv.get("no_dedup", "").lower() in ("1", "true", "yes"):
+        argv.append("--no-dedup")
     return argv + ["--json"]
 
 def _parse_context(kv):

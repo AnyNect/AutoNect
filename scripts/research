@@ -512,18 +512,48 @@ def cmd_index(args):
           f"model={st['embed_model']}")
 
 def cmd_search(args):
-    """Hybrid (dense + BM25, RRF-fused) search over the indexed vault."""
+    """Hybrid (dense + BM25, RRF-fused) search over the indexed vault.
+
+    Defaults to one hit per document (URL) -- without it, RRF happily
+    returns three chunks of the same page, which is never what a caller
+    wants.  With --rerank, the fused top pool goes through the
+    cross-encoder (same one `run`/`ground` use) and is re-sorted by
+    CE relevance, optionally floored by --min-relevance.
+    """
     ri = _idx()
     conn, sv = ri.connect()
-    hits = ri.search(conn, sv, args.query, top=args.top)
+    pool = max(args.top * 5, 40)
+    hits = ri.search(conn, sv, args.query, top=pool)
+    if not args.no_dedup:
+        seen, uniq = set(), []
+        for h in hits:
+            if h["url"] in seen:
+                continue
+            seen.add(h["url"]); uniq.append(h)
+        hits = uniq
+    do_rerank = getattr(args, "rerank", False) or \
+                getattr(args, "min_relevance", None) is not None
+    if do_rerank and hits:
+        _, ce = _load_models()
+        docs = [((h.get("title") or "") + "\n\n" + h["text"])[:2000]
+                for h in hits]
+        scores = list(ce.rerank(args.query, docs))
+        for h, sc in zip(hits, scores):
+            h["relevance"] = round(float(sc), 3)
+        hits.sort(key=lambda h: h["relevance"], reverse=True)
+        if getattr(args, "min_relevance", None) is not None:
+            hits = [h for h in hits if h["relevance"] >= args.min_relevance]
+    hits = hits[: args.top]
     payload = {"ok": True, "mode": "search", "query": args.query,
                "count": len(hits), "hits": hits}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2)); return
     print(f"search: {args.query!r}  ({len(hits)} hits)")
     for i, h in enumerate(hits, 1):
+        rel = (f" rel={h['relevance']:.3f}"
+               if "relevance" in h else "")
         print(f"  {i}. rrf={h['rrf']:.5f} d={h['dense']:.3f} "
-              f"s={h['sparse']:.3f}")
+              f"s={h['sparse']:.3f}{rel}")
         print(f"     {h['title'] or h['url']}")
         print(f"     {h['url'][:90]}")
         if args.show_text:
@@ -815,6 +845,12 @@ def main():
     se.add_argument("query")
     se.add_argument("--top", type=int, default=8)
     se.add_argument("--show-text", action="store_true")
+    se.add_argument("--no-dedup", action="store_true",
+                    help="allow multiple chunks from the same document")
+    se.add_argument("--rerank", action="store_true",
+                    help="cross-encoder rerank the fused pool")
+    se.add_argument("--min-relevance", type=float, default=None,
+                    help="drop hits below this CE score (implies --rerank)")
     se.add_argument("--json", action="store_true")
     se.set_defaults(func=cmd_search)
     cx = sub.add_parser("context", help="compressed, budgeted AI context block")
