@@ -6,19 +6,16 @@ former bare-tag pass was removed: a tag written while explaining the
 syntax (e.g. in prose about the tag itself) was being executed.
 
 Accepted forms:
- 1. command-language fence -- three backticks, then the word command, then
- the raw shell text. Survives the HTML to Markdown pass byte-exact and
- is the form the system prompt requests.
+ 1. language fence -- 3 OR MORE backticks, then a skill name (command,
+    queuecommand, attach, kaggle, research), then the raw payload. The
+    closer is a run of the SAME length, so a payload may contain shorter
+    backtick runs without ending the fence (CommonMark nesting).
  2. plain fence wrapping a skill tag -- the tag name is the skill.
- Used by attach/kaggle/research and by historical chats.
- 3. legacy three-backtick command fence.
+    Used by attach/kaggle/research and by historical chats.
 
-Background jobs: a skill name may be prefixed with queue (a queued shell
-command is the word queue immediately followed by command). The prefix is
-stripped and the entry gains queued: True.
-
-Each match returns: skill, code (the payload), raw (the exact match), and
-queued: True when the tag carried the queue prefix.
+Background jobs: the queue prefix works as a fence language too
+(queuecommand). The prefix is stripped and the entry gains queued:
+True.
 """
 import re
 from typing import Dict, List
@@ -31,8 +28,8 @@ BACKGROUNDABLE_SKILLS = {"command", "kaggle"}
 
 
 _FENCE_RE = re.compile(
-    r"```command\s*\n(.*?)```",
-    re.DOTALL,
+    r"^(`{3,})[ \t]*([a-zA-Z_][\w-]*)[ 	]*\n([\s\S]*?)^\1[ \t]*$",
+    re.MULTILINE,
 )
 
 
@@ -41,11 +38,11 @@ _FENCE_RE = re.compile(
 # closing tag embedded in a payload (e.g. inside a heredoc) does not
 # truncate the command. Hazard fired 2026-10-07.
 _FENCED_TAG_RE = re.compile(
-    r"```[a-zA-Z0-9_-]*\s*\n"
-    r"\s*(?:<|&lt;)([a-zA-Z_][\w-]*)(?:>|&gt;)"
+    r"^(`{3,})[a-zA-Z0-9_-]*[ \t]*\n"
+    r"[ \t]*(?:<|&lt;)([a-zA-Z_][\w-]*)(?:>|&gt;)"
     r"([\s\S]*?)"
-    r"\n?\s*(?:<|&lt;)/\1\s*(?:>|&gt;)\s*\n?```",
-    re.DOTALL,
+    r"\n?[ \t]*(?:<|&lt;)/\2\s*(?:>|&gt;)[ \t]*\n?^\1[ \t]*$",
+    re.MULTILINE,
 )
 
 
@@ -77,7 +74,7 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
     # 1) Fenced skill blocks first -- greedy to the LAST closing tag so an
     #    embedded literal tag cannot truncate the payload.
     for match in _FENCED_TAG_RE.finditer(text):
-        entry = _make_entry(match.group(1), match.group(2), match.group(0))
+        entry = _make_entry(match.group(2), match.group(3), match.group(0))
         if entry is None:
             continue
         key = (entry["skill"], entry.get("queued", False), entry["code"])
@@ -90,14 +87,14 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
         return commands
 
     for match in _FENCE_RE.finditer(text):
-        code = unescape_md(match.group(1)).strip()
-        if not code:
+        entry = _make_entry(match.group(2), match.group(3), match.group(0))
+        if entry is None:
             continue
-        key = ("command", False, code)
+        key = (entry["skill"], entry.get("queued", False), entry["code"])
         if key in seen:
             continue
         seen.add(key)
-        commands.append({"skill": "command", "code": code, "raw": match.group(0)})
+        commands.append(entry)
     return commands
 # Markdown escapes the HTML-to-Markdown conversion inserts into prose
 # (underscore becomes backslash-underscore; star becomes backslash-star).

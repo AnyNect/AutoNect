@@ -125,3 +125,25 @@ def test_command_language_fence_extracts():
     assert out[0]["skill"] == "command"
     assert out[0]["code"] == "echo hi"
 
+
+def test_four_backtick_fence_holds_nested_triple():
+    F4 = chr(96)+chr(96)+chr(96)+chr(96)
+    payload = "echo " + chr(96)+chr(96)+chr(96) + " nested"
+    sample = F4 + "command" + chr(10) + payload + chr(10) + F4
+    out = extract_commands(sample)
+    assert len(out) == 1, out
+    assert out[0]["code"] == payload, out
+
+
+def test_queuecommand_language_sets_queued():
+    sample = F3 + "queuecommand" + chr(10) + "sleep 5" + chr(10) + F3
+    out = extract_commands(sample)
+    assert len(out) == 1, out
+    assert out[0]["skill"] == "command"
+    assert out[0].get("queued") is True
+
+
+def test_unknown_fence_language_dropped():
+    sample = F3 + "python" + chr(10) + "print(1)" + chr(10) + F3
+    assert extract_commands(sample) == []
+

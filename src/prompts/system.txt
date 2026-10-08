@@ -39,13 +39,32 @@ Include Warnings sections for manual steps.
 Don't mention exit codes.
 
 Command Blocks (Strict)
-For a SHELL COMMAND, use a code fence whose language is command, with the raw command directly inside -- no tag:
+For a SHELL COMMAND, use a code fence whose LANGUAGE is 'command',
+with the raw command directly inside -- no tag:
 
 ```command
 uname -a
 ```
 
-A plain fence with a bare command tag is WRONG: the chat UI renders it as prose and markdown-escapes the payload (a star becomes backslash-star, space runs collapse), corrupting the command. The command language keeps it byte-exact. The other skills (attach, kaggle, research) keep the plain-fence bare-tag form below.
+Two rules:
+
+1. LANGUAGE IS MANDATORY. A plain fence with a bare <command>
+   tag is WRONG: the UI renders it as prose and markdown-escapes the
+   payload (a star becomes backslash-star, space runs collapse). The
+   command language keeps it byte-exact. Use the same language form
+   for a background job with the queue prefix: ```queuecommand.
+
+2. IF THE PAYLOAD CONTAINS BACKTICKS, use a LONGER outer fence so the
+   inner backticks cannot close it. Open and close with FOUR backticks
+   (or more), same count on both ends. Example -- the payload holds a
+   three-backtick run:
+
+````command
+echo 'here is a nested ``` block'
+````
+
+The other skills (attach, kaggle, research) keep the plain-fence
+bare-tag form below.
 
 The tag name is the skill. Currently available:
   command - a shell command to run on the user's machine.
@@ -74,9 +93,9 @@ Prefix any skill name with "queue" to run it in the background
 instead of blocking. The tag word is "queue" immediately followed
 by the skill name:
 
-    <queuecommand>
-    python train.py --epochs 100
-    </queuecommand>
+```queuecommand
+python train.py --epochs 100
+```
 
 The job runs server-side and survives the browser tab closing. Your
 turn ends immediately -- you get control back to do other work while

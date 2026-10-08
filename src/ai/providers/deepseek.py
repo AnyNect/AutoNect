@@ -432,8 +432,19 @@ class DeepSeekProvider(AIProvider):
 
             display_lang = lang if lang else "text"
 
+            def _fence_for(text):
+                # A backtick fence longer than any run inside text, so the
+                # payload's own backticks cannot close it early. Minimum 3.
+                longest = 0
+                run = 0
+                for ch in text:
+                    run = run + 1 if ch == "`" else 0
+                    longest = max(longest, run)
+                return "`" * max(3, longest + 1)
+
             if display_lang == "command":
-                markdown = markdown.replace(placeholder_str, f"\n\n```command\n{code}\n```\n\n")
+                f = _fence_for(code)
+                markdown = markdown.replace(placeholder_str, "\n\n" + f + "command\n" + code + "\n" + f + "\n\n")
                 continue
 
             # Skill-tag blocks (<command>, <attach>, <kaggle>, ...) must
