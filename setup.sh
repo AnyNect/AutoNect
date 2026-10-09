@@ -398,58 +398,19 @@ else
     info "User directory exists — keeping contents."
 fi
 
-# ── System prompt (user-owned unless a template is present) ──
-TEMPLATE_FILE="src/prompts/system_template.txt"
-OUTPUT_FILE="src/prompts/system.txt"
+# ── System prompt ──
+# Generated from src/prompts/system_template.txt (and
+# system_restricted_template.txt) by ./generate_prompt.sh. Edit the
+# templates, not src/prompts/system.txt -- that file is overwritten.
 mkdir -p src/prompts
 
-if [ -f "$TEMPLATE_FILE" ]; then
-    info "Generating system prompt from template..."
-
-    OS=$(uname -s)
-    KERNEL=$(uname -r)
-    ARCH=$(uname -m)
-    SHELL_NAME=$(basename "${SHELL:-bash}")
-    TERM=${TERM:-unknown}
-    USER_NAME=${USER:-$(whoami)}
-    HOME_DIR=${HOME:-$HOME}
-    LANG_VALUE=${LANG:-en_US.UTF-8}
-
-    if command -v apt &> /dev/null; then PACKAGE_MANAGER="apt"
-    elif command -v pacman &> /dev/null; then PACKAGE_MANAGER="pacman"
-    elif command -v dnf &> /dev/null; then PACKAGE_MANAGER="dnf"
-    elif command -v yum &> /dev/null; then PACKAGE_MANAGER="yum"
-    elif command -v zypper &> /dev/null; then PACKAGE_MANAGER="zypper"
-    elif command -v apk &> /dev/null; then PACKAGE_MANAGER="apk"
-    else PACKAGE_MANAGER="unknown"
-    fi
-
-    TERMINAL_EMULATOR="${TERM_PROGRAM:-${TERMINAL_EMULATOR:-${XDG_SESSION_TYPE:-unknown}}}"
-    DESKTOP_SESSION_VAL="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-unknown}}"
-
-    python3 - "$TEMPLATE_FILE" "$OUTPUT_FILE" <<PYEOF
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-with open(src) as f:
-    content = f.read()
-subs = {
-    'OS': '$OS', 'KERNEL': '$KERNEL', 'ARCH': '$ARCH',
-    'SHELL': '$SHELL_NAME', 'TERM': '$TERM',
-    'USER': '$USER_NAME', 'HOME': '$HOME_DIR',
-    'PACKAGE_MANAGER': '$PACKAGE_MANAGER',
-    'TERMINAL_EMULATOR': '$TERMINAL_EMULATOR',
-    'DESKTOP_SESSION': '$DESKTOP_SESSION_VAL',
-    'LANG': '$LANG_VALUE',
-}
-for key, val in subs.items():
-    content = content.replace('{{' + key + '}}', val)
-with open(dst, 'w') as f:
-    f.write(content)
-PYEOF
-    success "System prompt regenerated from template."
-elif [ ! -f "$OUTPUT_FILE" ]; then
-    info "No template found — writing default system prompt."
-    cat > "$OUTPUT_FILE" <<'EOF'
+if [ -x "./generate_prompt.sh" ]; then
+    info "Regenerating system prompts from templates..."
+    ./generate_prompt.sh
+    success "System prompts regenerated."
+elif [ ! -f "src/prompts/system.txt" ]; then
+    info "No generator and no system.txt -- writing a minimal default."
+    cat > "src/prompts/system.txt" <<'PROMPT_EOF'
 You are an AI assistant that helps users with system administration and development tasks.
 Your responses should be clear, concise, and include commands only when appropriate.
 When you provide commands, place them inside triple backticks with the language "command", e.g.:
@@ -459,10 +420,10 @@ ls -la
 ```
 
 Always explain what the command does before showing it.
-EOF
+PROMPT_EOF
     success "Default system prompt written."
 else
-    info "Existing system prompt preserved (no template found)."
+    info "Existing system prompt preserved (no generator present)."
 fi
 
 # ── Logs directory ──

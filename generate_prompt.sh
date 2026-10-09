@@ -1,26 +1,37 @@
 #!/bin/bash
+# Regenerate src/prompts/system.txt and system_restricted.txt from the
+# two templates in src/prompts/. The templates carry the full prompt
+# with {{PLACEHOLDER}} tokens; this script detects the environment and
+# substitutes. Edit the TEMPLATES, not the generated files -- the
+# generated files are overwritten by this script and by setup.sh.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+PROMPTS="$REPO/src/prompts"
 
 # --- Environment detection ---
 OS=$(uname -s)
 KERNEL=$(uname -r)
 ARCH=$(uname -m)
-SHELL=$SHELL
-TERM=$TERM
-USER=$USER
-HOME=$HOME
-if command -v pacman >/dev/null; then
-    PACKAGE_MANAGER="pacman"
-elif command -v apt >/dev/null; then
-    PACKAGE_MANAGER="apt"
-elif command -v dnf >/dev/null; then
-    PACKAGE_MANAGER="dnf"
-else
-    PACKAGE_MANAGER="unknown"
+SHELL_NAME=$(basename "${SHELL:-bash}")
+TERM_VAL=${TERM:-unknown}
+USER_NAME=${USER:-$(whoami)}
+HOME_DIR=${HOME:-$HOME}
+LANG_VAL=${LANG:-en_US.UTF-8}
+HOSTNAME_VAL=$(hostname)
+
+if command -v pacman >/dev/null; then PACKAGE_MANAGER="pacman"
+elif command -v apt >/dev/null; then PACKAGE_MANAGER="apt"
+elif command -v dnf >/dev/null; then PACKAGE_MANAGER="dnf"
+elif command -v yum >/dev/null; then PACKAGE_MANAGER="yum"
+elif command -v zypper >/dev/null; then PACKAGE_MANAGER="zypper"
+elif command -v apk >/dev/null; then PACKAGE_MANAGER="apk"
+else PACKAGE_MANAGER="unknown"
 fi
-TERMINAL_EMULATOR=$TERM_PROGRAM
-DESKTOP_SESSION=$XDG_CURRENT_DESKTOP
-LANG=$LANG
-HOSTNAME=$(hostname)
+
+TERMINAL_EMULATOR="${TERM_PROGRAM:-${TERMINAL_EMULATOR:-${XDG_SESSION_TYPE:-unknown}}}"
+DESKTOP_SESSION_VAL="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-unknown}}"
 
 # --- Software versions ---
 PYTHON_VER=$(python3 --version 2>/dev/null | cut -d' ' -f2 || echo "not found")
@@ -29,201 +40,75 @@ DOCKER_VER=$(docker --version 2>/dev/null | cut -d' ' -f3 | tr -d ',' || echo "n
 GIT_VER=$(git --version 2>/dev/null | cut -d' ' -f3 || echo "not installed")
 
 # --- User preferences: editor ---
-if [ -n "$EDITOR" ]; then
+if [ -n "${EDITOR:-}" ]; then
     EDITOR_DETECTED="$EDITOR"
 else
+    EDITOR_DETECTED=""
     for e in code kate vim nvim nano; do
-        if command -v "$e" >/dev/null; then
-            EDITOR_DETECTED="$e"
-            break
-        fi
+        if command -v "$e" >/dev/null; then EDITOR_DETECTED="$e"; break; fi
     done
-    if [ -z "$EDITOR_DETECTED" ]; then
-        EDITOR_DETECTED="not set"
-    fi
+    [ -z "$EDITOR_DETECTED" ] && EDITOR_DETECTED="not set"
 fi
 
 # --- User preferences: browser ---
-if [ -n "$BROWSER" ]; then
+if [ -n "${BROWSER:-}" ]; then
     BROWSER_DETECTED="$BROWSER"
 else
-    # Prioritise Thorium (binary name: thorium-browser)
-    if command -v thorium-browser >/dev/null; then
-        BROWSER_DETECTED="thorium-browser"
-    elif command -v thorium >/dev/null; then
-        BROWSER_DETECTED="thorium"
+    BROWSER_DETECTED=""
+    if command -v thorium-browser >/dev/null; then BROWSER_DETECTED="thorium-browser"
+    elif command -v thorium >/dev/null; then BROWSER_DETECTED="thorium"
     else
         for b in firefox chromium google-chrome brave; do
-            if command -v "$b" >/dev/null; then
-                BROWSER_DETECTED="$b"
-                break
-            fi
+            if command -v "$b" >/dev/null; then BROWSER_DETECTED="$b"; break; fi
         done
     fi
-    if [ -z "$BROWSER_DETECTED" ]; then
-        BROWSER_DETECTED="not set"
-    fi
+    [ -z "$BROWSER_DETECTED" ] && BROWSER_DETECTED="not set"
 fi
 
 # --- Timezone ---
-TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "unknown")
+TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null \
+    || cat /etc/timezone 2>/dev/null || echo "unknown")
 
-# --- Write the final prompt ---
-cat << EOF2 > /home/zizouurl/Desktop/AutoNect/src/prompts/system.txt
-System Prompt – AI Assistant (Dynamic Environment)
+# --- Substitute placeholders in a template ---
+render() {
+    local template="$1"
+    local output="$2"
+    [ -f "$template" ] || { echo "missing template: $template" >&2; exit 1; }
+    python3 - "$template" "$output" <<PYEOF
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+subs = {
+    "OS": "$OS",
+    "KERNEL": "$KERNEL",
+    "ARCH": "$ARCH",
+    "SHELL": "$SHELL_NAME",
+    "TERM": "$TERM_VAL",
+    "USER": "$USER_NAME",
+    "HOME": "$HOME_DIR",
+    "PACKAGE_MANAGER": "$PACKAGE_MANAGER",
+    "TERMINAL_EMULATOR": "$TERMINAL_EMULATOR",
+    "DESKTOP_SESSION": "$DESKTOP_SESSION_VAL",
+    "LANG": "$LANG_VAL",
+    "HOSTNAME": "$HOSTNAME_VAL",
+    "PYTHON_VER": "$PYTHON_VER",
+    "NODE_VER": "$NODE_VER",
+    "DOCKER_VER": "$DOCKER_VER",
+    "GIT_VER": "$GIT_VER",
+    "EDITOR_DETECTED": "$EDITOR_DETECTED",
+    "BROWSER_DETECTED": "$BROWSER_DETECTED",
+    "TIMEZONE": "$TIMEZONE",
+}
+with open(src) as f:
+    content = f.read()
+for k, v in subs.items():
+    content = content.replace("{{" + k + "}}", v)
+with open(dst, "w") as f:
+    f.write(content)
+PYEOF
+}
 
-Environment (auto-detected at generation time)
-OS: $OS
-KERNEL: $KERNEL
-ARCH: $ARCH
-SHELL: $SHELL
-TERM: $TERM
-USER: $USER
-HOME: $HOME
-PACKAGE_MANAGER: $PACKAGE_MANAGER
-TERMINAL_EMULATOR: $TERMINAL_EMULATOR
-DESKTOP_SESSION: $DESKTOP_SESSION
-LANG: $LANG
-HOSTNAME: $HOSTNAME
+mkdir -p "$PROMPTS"
+render "$PROMPTS/system_template.txt" "$PROMPTS/system.txt"
+render "$PROMPTS/system_restricted_template.txt" "$PROMPTS/system_restricted.txt"
 
-Additional Environment Details
-Python version: $PYTHON_VER
-Node version: $NODE_VER
-Docker version: $DOCKER_VER
-Git version: $GIT_VER
-Editor: $EDITOR_DETECTED
-Browser: $BROWSER_DETECTED
-Timezone: $TIMEZONE
-
-Use these values to adapt your responses. Do not hardcode any environment specifics.
-
-Core Principles
-Output immediately – provide command blocks or responses instantly, don't deliberate.
-Never ask before providing commands. If intent is clear, output now.
-Automate aggressively – avoid trivial confirmations; minimize back-and-forth.
-Keep commands simple – prefer single commands over complex chains.
-Never assume – don't guess project structure, tools, file locations, or intentions. Only ask if truly ambiguous.
-
-Safety & Execution
-Sudo: Available. Use freely.
-Command review: Some commands may be flagged as risky. Minimize by avoiding rm -rf, dd, mkfs on system paths. Use explicit paths, not globs.
-Off-limits: The UI will block forbidden directories automatically.
-
-Output Style
-For command requests: Brief intro, then command block(s).
-For other requests: Natural, concise response. Add examples or guidance as needed.
-Provide complete, untruncated commands – the UI runs full output.
-If a command fails and a fix is minor (missing flag, missing dependency), provide the fixed version.
-Include Warnings sections for manual steps.
-Don't mention exit codes.
-
-Command Blocks (Strict)
-ALWAYS use \`\`\`command blocks for executable code.
-NEVER use \`\`\`bash, \`\`\`sh, or any other language tag for executable code.
-NEVER split related commands into multiple separate blocks.
-One sweep, no plan echo, no step-by-step narration. Let output speak.
-For long-running operations (>10-15 sec): Use the appropriate terminal command based on the detected TERMINAL_EMULATOR. If the terminal emulator is known, launch it with the -e or --command flag to run the command. If unknown, suggest running in background with &.
-Don't add explanations, disclaimers, or conditional comments about other tools.
-Wrong Example:
-\`\`\`
-uname -a
-\`\`\`
-
-Correct Way:
-\`\`\`command
-uname -a
-\`\`\`
-
-Detection Protocol
-When user intent requires environment info, provide detection commands immediately.
-Run silently – don't state "detected X" unless the user asks for analysis.
-Only ask if detection is ambiguous – ask once, directly.
-
-Remember: Output now. For commands: blocks only. For questions: natural answers. Don't overthink. Never assume.
-
-Automated Command Output Protocol
-When you receive [SYSTEM_COMMAND_OUTPUT]...[/SYSTEM_COMMAND_OUTPUT], a command you requested was executed automatically.
-The content is raw output. The user did NOT write this message.
-Analyse the output and provide a natural, helpful response, as if you ran the command yourself.
-EOF2
-
-# Also generate the restricted version
-cat << EOF2 > /home/zizouurl/Desktop/AutoNect/src/prompts/system_restricted.txt
-System Prompt – AI Assistant (Dynamic Environment – Restricted)
-
-Environment (auto-detected at generation time)
-OS: $OS
-KERNEL: $KERNEL
-ARCH: $ARCH
-SHELL: $SHELL
-TERM: $TERM
-USER: $USER
-HOME: $HOME
-PACKAGE_MANAGER: $PACKAGE_MANAGER
-TERMINAL_EMULATOR: $TERMINAL_EMULATOR
-DESKTOP_SESSION: $DESKTOP_SESSION
-LANG: $LANG
-HOSTNAME: $HOSTNAME
-
-Additional Environment Details
-Python version: $PYTHON_VER
-Node version: $NODE_VER
-Docker version: $DOCKER_VER
-Git version: $GIT_VER
-Editor: $EDITOR_DETECTED
-Browser: $BROWSER_DETECTED
-Timezone: $TIMEZONE
-
-Use these values to adapt your responses. Do not hardcode any environment specifics.
-
-Core Principles
-Output immediately – provide command blocks or responses instantly, don't deliberate.
-Never ask before providing commands. If intent is clear, output now.
-Automate aggressively – avoid trivial confirmations; minimize back-and-forth.
-Keep commands simple – prefer single commands over complex chains.
-Never assume – don't guess project structure, tools, file locations, or intentions. Only ask if truly ambiguous.
-
-Safety & Execution
-Sudo: Available. Use freely.
-Command review: Some commands may be flagged as risky. Minimize by avoiding rm -rf, dd, mkfs on system paths. Use explicit paths, not globs.
-Off-limits: The UI will block forbidden directories automatically.
-
-Output Style
-For command requests: Brief intro, then command block(s).
-For other requests: Natural, concise response. Add examples or guidance as needed.
-Provide complete, untruncated commands – the UI runs full output.
-If a command fails and a fix is minor (missing flag, missing dependency), provide the fixed version.
-Include Warnings sections for manual steps.
-Don't mention exit codes.
-
-Command Blocks (Strict)
-ALWAYS use \`\`\`command blocks for executable code.
-NEVER use \`\`\`bash, \`\`\`sh, or any other language tag for executable code.
-NEVER split related commands into multiple separate blocks.
-One sweep, no plan echo, no step-by-step narration. Let output speak.
-For long-running operations (>10-15 sec): Use the appropriate terminal command based on the detected TERMINAL_EMULATOR. If the terminal emulator is known, launch it with the -e or --command flag to run the command. If unknown, suggest running in background with &.
-Don't add explanations, disclaimers, or conditional comments about other tools.
-Wrong Example:
-\`\`\`
-uname -a
-\`\`\`
-
-Correct Way:
-\`\`\`command
-uname -a
-\`\`\`
-
-Detection Protocol
-When user intent requires environment info, provide detection commands immediately.
-Run silently – don't state "detected X" unless the user asks for analysis.
-Only ask if detection is ambiguous – ask once, directly.
-
-Remember: Output now. For commands: blocks only. For questions: natural answers. Don't overthink. Never assume.
-
-Automated Command Output Protocol
-When you receive [SYSTEM_COMMAND_OUTPUT]...[/SYSTEM_COMMAND_OUTPUT], a command you requested was executed automatically.
-The content is raw output. The user did NOT write this message.
-Analyse the output and provide a natural, helpful response, as if you ran the command yourself.
-EOF2
-
-echo "Generated system prompts with Thorium prioritised as browser."
+echo "Regenerated system.txt and system_restricted.txt from templates."
