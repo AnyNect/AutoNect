@@ -37,6 +37,10 @@ AutoNect lets you talk to AI providers (starting with DeepSeek) through browser 
 | **⚡ Auto‑Allow Mode** | When enabled, commands are automatically approved (after a countdown) and queued for sequential execution – no manual clicks needed. |
 | **🖥️ Native Terminal** | "Open Terminal" button launches your preferred terminal emulator (configurable) and keeps it open after command completion. |
 | **💾 Chat History** | Persistent conversations stored in a local SQLite database. Sidebar with rename, pin, and delete. DeepSeek sessions are re‑navigated automatically when you open an old chat. |
+| **🧩 Skill System** | Tag-based skills inside the reply: `<command>`, `<attach>`, `<kaggle>`, `<research>`. Attach rides the feedback channel, so the AI sends files to itself. |
+| **🔎 Deep-Research Engine** | Local research: SearXNG search, trafilatura fetch, multilingual MiniLM embed + cross-encoder rerank, sqlite-vec + FTS5 index. Returns a cited evidence bundle, no cloud. |
+| **🚀 Remote GPU Training** | A `kaggle` skill drives the Kaggle CLI: push a kernel, poll it, fetch the output. Queue it with `queuekaggle` and the result returns on its own. |
+| **🎧 Local STT** | Mic dictation with NVIDIA Parakeet TDT 0.6B v2 (ONNX, int8, CPU). No cloud, no GPU, roughly 17x realtime. |
 | **⌨️ AnyNect CLI** | Single global command (`AnyNect`) with subcommands for `start`, `setup`, `login`, `test`, and `version`. `AutoNect` remains as a backward‑compatible alias. |
 
 ---
@@ -440,6 +444,77 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 
 ---
 
+## 🧩 Skill System
+
+Skills are tags the AI can emit inside a fenced block in its reply.
+The parser recognises them, routes each to a handler, and the UI
+renders the result as a card instead of raw prose.
+
+| Skill | What it does |
+|-------|--------------|
+| `command` | Run a shell command on your machine. Fenced with the `command` language tag so the payload arrives byte-exact. |
+| `attach` | Send files *to the AI*. Payload is absolute paths; the files arrive on the AI's next turn. |
+| `kaggle` | Run a Kaggle CLI action (push a kernel, poll status, fetch output). |
+| `research` | Run the local deep-research engine and return a cited bundle. |
+
+**The queue prefix.** Any skill name prefixed with `queue` runs as a
+background job, server-side, surviving the browser tab closing. Its
+output is delivered to the AI on its own when the job finishes. Use it
+for training runs, downloads, builds and long test suites.
+
+    queuecommand python train.py --epochs 100
+
+One action per tag. Tags must be inside a code fence or the renderer
+eats them. Shell commands use the `command` language fence; the other
+skills use a plain fence with a bare tag.
+
+---
+
+## 🔎 Research Engine
+
+A self-contained local research tool, wired in as the `research` skill.
+It composes existing OSS rather than hand-rolling anything:
+
+    search        SearXNG + 5 engines (google cse, bing, mwmbl, yep, seznam)
+    fetch         trafilatura, plus markitdown for PDF and Office files
+    embed         fastembed multilingual MiniLM (384-dim)
+    index         sqlite-vec (dense) + FTS5 (sparse BM25), fused with RRF
+    rerank        cross-encoder, optional, with a relevance floor
+    chunk         chonkie
+
+Three modes: `index` (build the index), `search` (hybrid retrieval,
+deduped by URL by default), `context` (assemble a bundle for the
+model). `ground` and `verify` run against the index in O(log n), with
+a whole-vault fallback.
+
+Measured on 108 documents: 1,786 chunks, 8.8 MB, cold index about 36 s,
+warm 0.0 s, search under 1 s.
+
+The engine lives at `scripts/research`; `~/.local/bin/research` is a
+symlink to it, and a fresh clone resolves the in-repo copy with no
+install.
+
+---
+
+## 🎧 Local STT Service
+
+Mic dictation in the chat box is served by a separate local process.
+
+    cd stt-service
+    uv venv --python 3.12 .venv
+    uv pip install --python .venv/bin/python -r requirements.txt
+    .venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 6012
+
+Model: NVIDIA **Parakeet TDT 0.6B v2** (English), ONNX Runtime, int8,
+CPU, about 17x realtime. The browser streams 16 kHz float32 PCM over
+`/ws/stt` and writes the transcript into the prompt. The model is
+utterance-based, not streaming; endpointing is RMS-based VAD.
+
+See `stt-service/README.md` for the WebSocket protocol.
+
+
+---
+
 ## 🛠️ Tech Stack
 
 | Layer | Technology |
@@ -454,6 +529,10 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 | **Logging** | Python `logging` with rotating file handler |
 | **Dependency management** | `dependencies/` folder with split `base`, `dev`, `terminal` |
 | **CLI** | `argparse` + setuptools console_scripts |
+| **Skills** | Tag-based dispatch + queue-prefixed background jobs |
+| **Research engine** | SearXNG + trafilatura + fastembed + sqlite-vec + FTS5 + RRF |
+| **Kaggle** | Kaggle CLI via argv (shell=False), polled in a background job |
+| **Local STT** | NVIDIA Parakeet TDT 0.6B v2, ONNX Runtime, int8 CPU |
 
 ---
 
