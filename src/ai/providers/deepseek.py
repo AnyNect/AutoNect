@@ -67,10 +67,27 @@ class DeepSeekProvider(AIProvider):
         self.page = self.browser.launch()
 
         # Go directly to the last chat if we have one; else the base page.
+        # A transient network blip (ERR_NETWORK_CHANGED, a DNS hiccup, a
+        # dropped Wi-Fi handover) must NOT be fatal: retry the navigation
+        # a few times before giving up. Before this, one ERR_NETWORK_CHANGED
+        # at startup bubbled up through lifespan and killed the whole
+        # server (2026-10-16).
         target = self._saved_url() or self.base_url
         if target not in self.page.url:
             logger.info("Navigating to %s", target)
-            self.page.goto(target, timeout=30000)
+            last_err = None
+            for attempt in range(1, 4):
+                try:
+                    self.page.goto(target, timeout=30000)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    logger.warning("Navigation attempt %d/3 failed: %s", attempt, e)
+                    if attempt < 3:
+                        time.sleep(2 * attempt)
+            if last_err is not None:
+                raise last_err
             try:
                 self.page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:

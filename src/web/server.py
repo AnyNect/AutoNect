@@ -305,25 +305,50 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("STT auto-start failed (non-fatal)")
     provider = DeepSeekProvider()
-    try:
-        await loop.run_in_executor(_provider_executor, provider.connect)
+    # A failed DeepSeek connect must NOT kill the server. The browser is a
+    # flaky dependency (ERR_NETWORK_CHANGED, a login wall, a slow DNS).
+    # Before this, one transient failure raised out of lifespan, uvicorn
+    # logged "Application startup failed. Exiting.", and the whole app --
+    # including the local research engine and the command path -- went
+    # down with it (2026-10-16). Now: retry the connect a few times, and
+    # if it still fails, start in a degraded state so the UI and the
+    # local skills stay reachable and the provider can reconnect later.
+    _connected = False
+    for attempt in range(1, 4):
+        try:
+            await loop.run_in_executor(_provider_executor, provider.connect)
+            _connected = True
+            break
+        except Exception as e:
+            logger.warning("DeepSeek connect attempt %d/3 failed: %s", attempt, e)
+            if attempt < 3:
+                await asyncio.sleep(2 * attempt)
+
+    if _connected:
         logger.info("DeepSeek provider connected")
-        await loop.run_in_executor(_provider_executor, _restore_last_url)
-        _load_pending_restart_report()
-        if provider.observer:
-            provider.observer.subscribe(_on_dom_event)
-            logger.info("Subscribed to DOM observer for title sync")
-        _host = os.environ.get("AUTONECT_HOST", "127.0.0.1")
-        _port = os.environ.get("AUTONECT_PORT", "8000")
-        _url = f"http://{_host}:{_port}"
-        print("\n" + "=" * 60)
+        try:
+            await loop.run_in_executor(_provider_executor, _restore_last_url)
+            _load_pending_restart_report()
+            if provider.observer:
+                provider.observer.subscribe(_on_dom_event)
+                logger.info("Subscribed to DOM observer for title sync")
+        except Exception:
+            logger.exception("Post-connect setup failed (non-fatal)")
+    else:
+        logger.error("DeepSeek provider NOT connected after 3 attempts -- "
+                     "starting in degraded state; UI + local skills stay up.")
+
+    _host = os.environ.get("AUTONECT_HOST", "127.0.0.1")
+    _port = os.environ.get("AUTONECT_PORT", "8000")
+    _url = f"http://{_host}:{_port}"
+    print("\n" + "=" * 60)
+    if _connected:
         print("✅ AnyNect is ready!")
-        print(f"🌐 Open the UI at: \033]8;;{_url}\033\\{_url}\033]8;;\033\\")
-        print("📝 Press Ctrl+C to stop the server")
-        print("=" * 60 + "\n")
-    except Exception as e:
-        logger.exception("Failed to connect DeepSeek provider")
-        raise
+    else:
+        print("⚠️  AnyNect started WITHOUT DeepSeek (degraded)")
+    print(f"🌐 Open the UI at: \033]8;;{_url}\033\\{_url}\033]8;;\033\\")
+    print("📝 Press Ctrl+C to stop the server")
+    print("=" * 60 + "\n")
     yield
     logger.info("Shutting down application lifespan")
     await loop.run_in_executor(_provider_executor, _save_last_url)
