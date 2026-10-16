@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.ai.providers.deepseek import DeepSeekProvider
-from src.parser.commands import extract_commands
+from src.parser.commands import extract_commands, _make_entry
 from src.skills import get_handler as _get_skill_handler
 from src.skills import queue_runner as _queue_runner
 from src.skills import kaggle as _kaggle
@@ -579,8 +579,27 @@ def _dispatch_skills(commands: list[dict], session_id: str) -> list[dict]:
 def _extract_response(response: dict, session_id: str = "default") -> tuple[str, str, list[dict]]:
     thinking = response.get("thinking", "")
     answer = response.get("answer", "")
-    commands = response.get("commands", [])
-   
+    raw_commands = response.get("commands", [])
+
+    # The browser extractor tags each captured code block with its
+    # fence language. Resolve that language to a skill entry so
+    # a research or attach fence works the same way a command fence
+    # does. A block with no language (or an unrecognised one) defaults
+    # to a shell command, matching the old behaviour.
+    commands = []
+    for c in raw_commands:
+        lang = c.get("lang")
+        entry = None
+        if lang:
+            entry = _make_entry(lang, c.get("code", ""), c.get("raw", ""))
+        if entry is None:
+            entry = {
+                "skill": "command",
+                "code": c.get("code", ""),
+                "raw": c.get("raw", ""),
+            }
+        commands.append(entry)
+
     if not commands:
         commands = extract_commands(answer)
 
@@ -593,7 +612,6 @@ def _extract_response(response: dict, session_id: str = "default") -> tuple[str,
     commands = _annotate_commands_with_safety(commands, session_id)
     commands = _dispatch_skills(commands, session_id)
     return thinking, answer, commands
-
 
 def clean_deepseek_markdown(text: str) -> str:
     if text.strip().startswith("```") and text.strip().endswith("```"):

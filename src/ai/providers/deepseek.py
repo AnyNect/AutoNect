@@ -381,6 +381,13 @@ class DeepSeekProvider(AIProvider):
 
                 const codeBlocks = [];
                 const commands = [];
+                const SHELL_LANGS = {{command: 1, queuecommand: 1}};
+                const SKILL_LANGS = {{
+                    command: 1, queuecommand: 1,
+                    attach: 1, queueattach: 1,
+                    kaggle: 1, queuekaggle: 1,
+                    research: 1, queueresearch: 1,
+                }};
 
                 clone.querySelectorAll('{code_block_selector}').forEach((block, idx) => {{
                     const langTag = block.querySelector('{lang_tag_selector}');
@@ -388,10 +395,20 @@ class DeepSeekProvider(AIProvider):
                     const lang = langTag ? langTag.textContent.trim() : '';
                     const code = pre ? pre.textContent.trim() : '';
 
-                    if (lang === 'command') {{
-                        commands.push({{ code: code, raw: code }});
+                    if (SKILL_LANGS[lang]) {{
+                        commands.push({{ code: code, raw: code, lang: lang }});
                     }}
-                    codeBlocks.push({{ idx, lang, code }});
+                    if (SHELL_LANGS[lang]) {{
+                        // A shell command keeps a command fence so the
+                        // frontend can replace it with an interactive
+                        // card in place.
+                        codeBlocks.push({{ idx, lang: 'command', code: code }});
+                    }} else if (!SKILL_LANGS[lang]) {{
+                        // An ordinary code block: keep it for highlighting.
+                        codeBlocks.push({{ idx, lang: lang, code: code }});
+                    }}
+                    // A non-shell skill block is NOT re-inserted; the
+                    // frontend renders it from the commands array.
 
                     const placeholder = document.createTextNode(
                         `\\n\\nCODEBLOCKPLACEHOLDER${{idx}}\\n\\n`

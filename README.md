@@ -446,29 +446,34 @@ The guard returns one of three decisions: **ALLOW**, **ASK**, or **DENY**.
 
 ## 🧩 Skill System
 
-Skills are tags the AI can emit inside a fenced block in its reply.
-The parser recognises them, routes each to a handler, and the UI
-renders the result as a card instead of raw prose.
+A skill is a **language fence**: a code fence whose language is the
+skill name, with the raw payload directly inside. The language name IS
+the skill -- there is no tag wrapper and no alias.
+
+    command   a shell command to run on your machine
+
+The parser recognises the language, routes each entry to a handler, and
+the UI renders the result as a card instead of raw prose.
 
 | Skill | What it does |
 |-------|--------------|
-| `command` | Run a shell command on your machine. Fenced with the `command` language tag so the payload arrives byte-exact. |
-| `attach` | Send files *to the AI*. Payload is absolute paths; the files arrive on the AI's next turn. |
+| `command` | Run a shell command on your machine. Payload arrives byte-exact. |
+| `attach` | Send files *to the AI*. Payload is absolute paths, one per line; the files arrive on the AI's next turn. |
 | `kaggle` | Run a Kaggle CLI action (push a kernel, poll status, fetch output). |
-| `research` | Run the local deep-research engine and return a cited bundle. |
+| `research` | Run the local deep-research engine and return a cited bundle. Payload is key:value lines. |
 
 **The queue prefix.** Any skill name prefixed with `queue` runs as a
 background job, server-side, surviving the browser tab closing. Its
 output is delivered to the AI on its own when the job finishes. Use it
-for training runs, downloads, builds and long test suites.
+for training runs, downloads, builds, long test suites, and very broad
+research runs.
 
     queuecommand python train.py --epochs 100
+    queueresearch mode: run / query: <text> / breadth: 20 / top: 15
 
-One action per tag. Tags must be inside a code fence or the renderer
-eats them. Shell commands use the `command` language fence; the other
-skills use a plain fence with a bare tag.
-
----
+One action per fence. Every skill -- command, attach, kaggle, research
+-- uses the same language-fence form; the older bare-tag form is still
+accepted for historical chats but is no longer canonical.
 
 ## 🔎 Research Engine
 

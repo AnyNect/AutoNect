@@ -974,11 +974,26 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
         // stored commands, or any turn whose skill failed to parse, would
         // otherwise render the fenced tag block as visible prose AND as a
         // card -- the double-render bug. 2026-10-07.
+        // Strip skill blocks from the rendered bubble. A skill block
+        // may be a LANGUAGE fence (command, research, ...) or the
+        // LEGACY tag form (<attach>...</attach>). Both must be removed
+        // so the block does not ALSO render as plain code beside the
+        // card built from the commands array. 2026-10-16.
+        const nonCommandCodes = new Set();
+        (commands || []).forEach((c) => {
+            if (c && c.skill && c.skill !== 'command' && c.code) {
+                nonCommandCodes.add(c.code.trim());
+            }
+        });
         bubble.querySelectorAll('pre').forEach((preEl) => {
             const codeEl = preEl.querySelector('code');
             if (!codeEl) return;
             const codeText = codeEl.textContent.trim();
-            if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+            if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle|research)>[\s\S]*<\/\1>$/.test(codeText)) {
+                preEl.remove();
+                return;
+            }
+            if (nonCommandCodes.has(codeText)) {
                 preEl.remove();
             }
         });
@@ -1025,7 +1040,7 @@ function addMessage(role, content, thinking = '', commands = [], historical = fa
                     // Tag blocks (<command>/<attach>/<kaggle>) are already
                     // turned into cards from the commands array. Remove the
                     // raw block so it does not ALSO render as plain text.
-                    if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle)>[\s\S]*<\/\1>$/.test(codeText)) {
+                    if (/^<(queue[a-zA-Z_][\w-]*|command|attach|kaggle|research)>[\s\S]*<\/\1>$/.test(codeText)) {
                         preEl.remove();
                         return;
                     }

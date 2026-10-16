@@ -24,7 +24,7 @@ KNOWN_SKILLS = {"command", "attach", "kaggle", "research"}
 # Only these have a background form. attach is instantaneous (path
 # validation), so a queue prefix on it degrades to plain attach
 # instead of being dropped by the dispatcher (bug 2026-10-06).
-BACKGROUNDABLE_SKILLS = {"command", "kaggle"}
+BACKGROUNDABLE_SKILLS = {"command", "kaggle", "research"}
 
 
 _FENCE_RE = re.compile(
@@ -68,34 +68,55 @@ def _make_entry(tag: str, raw_code: str, raw: str):
 
 
 def extract_commands(text: str) -> List[Dict[str, str]]:
-    commands: List[Dict[str, str]] = []
-    seen = set()
+    """Extract skill entries from text.
 
-    # 1) Fenced skill blocks first -- greedy to the LAST closing tag so an
-    #    embedded literal tag cannot truncate the payload.
-    for match in _FENCED_TAG_RE.finditer(text):
-        entry = _make_entry(match.group(2), match.group(3), match.group(0))
-        if entry is None:
-            continue
-        key = (entry["skill"], entry.get("queued", False), entry["code"])
-        if key in seen:
-            continue
-        seen.add(key)
-        commands.append(entry)
+    Canonical form is the LANGUAGE FENCE: a code fence whose language
+    is the skill name (a fence tagged command, research, attach, or
+    kaggle, with the queue prefix allowed). That is the form the
+    system prompt asks for and the only one the renderer treats as a
+    first-class block.
 
-    if commands:
-        return commands
+    Legacy form is a bare tag inside a plain fence, e.g. an attach tag
+    wrapped in a fence. Historical chats use it and some models still
+    emit it; it is accepted but never preferred.
 
+    A message may mix the two forms. Both passes run, and a tag match
+    that overlaps a language fence already handled is skipped, so a
+    fence is never double-counted.
+    """
+    found = []  # (source_position, entry)
+
+    # 1) Canonical: language fence.
+    fence_spans = []
     for match in _FENCE_RE.finditer(text):
         entry = _make_entry(match.group(2), match.group(3), match.group(0))
         if entry is None:
             continue
+        fence_spans.append(match.span())
+        found.append((match.start(), entry))
+
+    # 2) Legacy: bare tag inside a plain fence, skipping fences already
+    #    consumed by pass 1.
+    for match in _FENCED_TAG_RE.finditer(text):
+        s, e = match.span()
+        if any(s < se and e > ss for ss, se in fence_spans):
+            continue
+        entry = _make_entry(match.group(2), match.group(3), match.group(0))
+        if entry is None:
+            continue
+        found.append((s, entry))
+
+    found.sort(key=lambda t: t[0])
+    commands: List[Dict[str, str]] = []
+    seen = set()
+    for _, entry in found:
         key = (entry["skill"], entry.get("queued", False), entry["code"])
         if key in seen:
             continue
         seen.add(key)
         commands.append(entry)
     return commands
+
 # Markdown escapes the HTML-to-Markdown conversion inserts into prose
 # (underscore becomes backslash-underscore; star becomes backslash-star).
 # A command carrying them reaches the shell literally and breaks: bash
@@ -104,6 +125,7 @@ def extract_commands(text: str) -> List[Dict[str, str]]:
 # a backslash before anything else (e.g. a regex dot) is meaningful and
 # must be kept.
 MD_ESCAPED = ('_',)
+
 
 def unescape_md(s):
     for ch in MD_ESCAPED:
